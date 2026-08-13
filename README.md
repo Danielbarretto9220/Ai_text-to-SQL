@@ -68,9 +68,12 @@ The repo is laid out to match the target architecture in [`enterprise-text-to-sq
 │   ├── retrieval/             document builder, vector search, hybrid search (RRF), cross-encoder
 │   │                          reranking, relationship-graph join paths, confidence scoring (implemented)
 │   ├── prompting/              prompt_builder.py + templates/user_prompt.txt (implemented)
-│   ├── validation/            sql_parser.py, guardrails.py, cost_estimator.py (stubs)
+│   ├── validation/            sql_parser.py (sqlglot), guardrails.py (LIMIT/complexity/business rules),
+│   │                          cost_estimator.py (EXPLAIN) (implemented)
 │   ├── llm/                   client.py (Gemini via google-genai) + schemas.py (implemented)
 │   ├── api/                   routes_query.py, routes_feedback.py, routes_admin.py (stubs)
+│   ├── pipeline.py            end-to-end orchestrator: retrieval → prompt → LLM → validate →
+│   │                          (opt-in) execute (implemented)
 │   └── main.py (stub), config.py (GEMINI_API_KEY/GEMINI_MODEL implemented)
 ├── workers/
 │   ├── reindex_embeddings.py  embedding indexing job (implemented, full-rebuild only)
@@ -86,12 +89,12 @@ The repo is laid out to match the target architecture in [`enterprise-text-to-sq
 
 ## Prerequisites & Setup
 
-To run the implemented scripts in this repo (`app/db/metadata_loader.py`, `app/db/models.py`, `workers/reindex_embeddings.py`, `workers/generate_docs.py`, `workers/drift_detector.py`, `workers/sync_data_content.py`, `workers/scheduler.py`, `app/retrieval/vector_search.py`, `app/retrieval/hybrid_search.py`, `app/retrieval/rerank.py`, `app/retrieval/relationship_graph.py`, `app/retrieval/confidence.py`, `app/prompting/prompt_builder.py`, `app/llm/client.py`, `test_connection.py`), you'll need:
+To run the implemented scripts in this repo (`app/db/metadata_loader.py`, `app/db/models.py`, `workers/reindex_embeddings.py`, `workers/generate_docs.py`, `workers/drift_detector.py`, `workers/sync_data_content.py`, `workers/scheduler.py`, `app/retrieval/vector_search.py`, `app/retrieval/hybrid_search.py`, `app/retrieval/rerank.py`, `app/retrieval/relationship_graph.py`, `app/retrieval/confidence.py`, `app/prompting/prompt_builder.py`, `app/llm/client.py`, `app/validation/sql_parser.py`, `app/validation/guardrails.py`, `app/validation/cost_estimator.py`, `app/pipeline.py`, `test_connection.py`), you'll need:
 
 - **PostgreSQL server**, with the **pgvector** extension enabled (used for storing/querying embeddings via the `vector` type and `<=>` distance operator)
 - **Python 3.x** and **pip**
 - Python packages: `pip install -r requirements.txt` (pinned versions — `psycopg2-binary`, `python-dotenv`,
-  `sentence-transformers`, `sqlalchemy`, `pgvector`, `apscheduler`, `google-genai`, `pydantic`)
+  `sentence-transformers`, `sqlalchemy`, `pgvector`, `apscheduler`, `google-genai`, `pydantic`, `sqlglot`)
   - `sentence-transformers` generates embeddings locally (`all-MiniLM-L6-v2`) and drives the reranker
     (`cross-encoder/ms-marco-MiniLM-L-6-v2`); pulls in `torch`/`transformers`
   - `pgvector` is the Python package (not the Postgres extension) — provides `pgvector.sqlalchemy.Vector`
@@ -165,10 +168,12 @@ There's no `pyproject.toml`/packaging yet, so run the moved modules from the rep
 
 ✔ LLM Client (app/llm/client.py — Google AI Studio/Gemini via the google-genai SDK; app/llm/schemas.py — a single Pydantic SQLGenerationResponse covering both the normal SQL-response and insufficient_context escape-hatch branches of the seeded system prompt. Live-verified end to end: a lookup question, an aggregation question the retrieval layer flagged low-confidence for, and an out-of-scope question that correctly triggered the insufficient_context response)
 
+✔ SQL Generation & Validation (app/validation/sql_parser.py — sqlglot-based syntax/read-only/hallucination/join checks; guardrails.py — LIMIT injection, complexity limits, and a defensive per-rule_type business rules engine over meta.business_rules' genuinely heterogeneous rule_logic shapes; cost_estimator.py — EXPLAIN-based cost/row thresholds. app/pipeline.py ties it all together as generate_validated_sql() — retrieval → prompt → LLM → validate → one repair-retry on validation failure — plus an opt-in execute_query() with real safety rails (read-only transaction, statement timeout, row cap, always rolled back). Live-verified end to end including the repair-retry path and execute_query()'s defense in depth: a direct UPDATE attempt bypassing all validation was rejected by Postgres's own READ ONLY transaction, not just the Python guardrails)
+
 ---
 
 ## Next Steps
 
-- Text-to-SQL Integration (SQL validation/guardrails and API layers — see docs/MODULES.md)
+- Text-to-SQL Integration (API layer — see docs/MODULES.md)
 
 See [`docs/MODULES.md`](docs/MODULES.md) for the full module-by-module list of what's left to build toward the target architecture in [`enterprise-text-to-sql-architecture.md`](enterprise-text-to-sql-architecture.md).

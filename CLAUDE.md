@@ -29,12 +29,12 @@ because it exists.
 - `app/prompting/prompt_builder.py` + `app/prompting/templates/user_prompt.txt` (see below)
 - `app/llm/client.py` (Gemini via `google-genai`) + `app/llm/schemas.py` (see below)
 - `app/config.py` (partial — `GEMINI_API_KEY`/`GEMINI_MODEL` only so far)
+- `app/validation/sql_parser.py`, `guardrails.py`, `cost_estimator.py` + `app/pipeline.py` (see below)
 - `workers/reindex_embeddings.py`, `workers/generate_docs.py`, `workers/drift_detector.py`,
   `workers/sync_data_content.py`, `workers/scheduler.py`
 
 **Stubs (docstring only, no logic yet)** — implementing one of these means writing the first real code
 for that piece, guided by the architecture doc section referenced in its docstring:
-- `app/validation/sql_parser.py`, `guardrails.py`, `cost_estimator.py`
 - `app/main.py`, `app/api/routes_*.py`
 
 When picking up a stub, read its docstring first (it cites the exact architecture-doc section) and read
@@ -60,11 +60,15 @@ python -m app.retrieval.relationship_graph
 python -m app.retrieval.confidence  # full retrieval pipeline demo
 python -m app.prompting.prompt_builder  # full prompting pipeline demo
 python -m app.llm.client  # full pipeline demo incl. a real Gemini call
+python -m app.validation.sql_parser
+python -m app.validation.guardrails
+python -m app.validation.cost_estimator
+python -m app.pipeline  # full end-to-end pipeline demo (retrieval -> prompt -> LLM -> validate)
 python test_connection.py     # standalone DB connectivity smoke test, run directly (not -m)
 ```
 
 There is no test suite yet (`tests/` is an empty package) and no lint/format config in the repo.
-`pip install -r requirements.txt` installs pinned dependencies (added alongside the LLM client module).
+`pip install -r requirements.txt` installs pinned dependencies.
 
 ### Environment
 
@@ -82,8 +86,10 @@ Key packages: `psycopg2`, `python-dotenv`, `sqlalchemy` (2.0), `pgvector` (Pytho
 `pgvector.sqlalchemy.Vector`), `sentence-transformers` (also provides `CrossEncoder`, used by
 `app/retrieval/rerank.py` — no separate reranking package needed), `apscheduler` (drives
 `workers/scheduler.py`), `google-genai` (Gemini SDK — chosen over the legacy `google-generativeai` package),
-`pydantic` (backs `app/llm/schemas.py`). pgvector on Windows needs PG **17.3+** (17.0–17.2 has a Windows
-linker bug that breaks building the extension from source).
+`pydantic` (backs `app/llm/schemas.py`), `sqlglot` (chosen over `pglast` for `app/validation/sql_parser.py`
+— `pglast` needs native compilation against the PG C parser; `sqlglot` is pure Python, avoiding a repeat of
+pgvector's Windows build pain). pgvector on Windows needs PG **17.3+** (17.0–17.2 has a Windows linker bug
+that breaks building the extension from source).
 
 ## Architecture — how the pieces fit together
 
@@ -207,14 +213,55 @@ deliberately don't short-circuit on `clarification_needed`; and an out-of-scope 
 triggered the `insufficient_context` escape hatch.
 
 `app/llm/client.py` does **not** do SQL validation, guardrails, cost estimation, or full pipeline
-orchestration — those remain separate, unbuilt items (`app/validation/*`, and an orchestration layer with
-no file yet) per `docs/MODULES.md` §4/§5.
+orchestration — those live in `app/validation/*` and `app/pipeline.py`, described next.
 
-**Target end-to-end pipeline** (retrieval, prompting, and the LLM client are done; validation/execution are
-not yet wired — see architecture doc §4 for the full diagram): question → `retrieve_context()` →
-`build_prompt()` → `call_llm()` → SQL validation (hallucination check against `meta.tables`/`meta.columns`,
-join check against `meta.relationships`, read-only enforcement, LIMIT injection, business-rule check against
-`meta.business_rules`, EXPLAIN cost check) → execution against a read-only replica → result formatting.
+**SQL validation** (architecture doc §5) — three independent-but-composed modules, chosen `sqlglot`
+(`dialect="postgres"`) over `pglast` deliberately: `pglast` binds to the real PG C parser and needs native
+compilation, and this repo already has a documented, painful Windows build history with `pgvector`
+(§17.0–17.2 linker bug). `sqlglot` is pure Python and covers everything needed.
+1. `app/validation/sql_parser.py` — `parse_sql()` (syntax), `is_read_only()` (root node must be
+   `exp.Select` — defense in depth, never trusts the LLM followed the system prompt's own read-only
+   instruction), `check_hallucinations()` (resolves aliased/unqualified column refs against
+   `meta.tables`/`meta.columns`), `check_joins()` (every JOIN...ON validated against
+   `app/retrieval/relationship_graph.build_graph()`, reused not requeried).
+2. `app/validation/guardrails.py` — `enforce_limit()` (injects `LIMIT 100` unless the query is a pure
+   aggregate, matching system prompt rule 4), `check_complexity()` (join/subquery count caps),
+   `check_business_rules()` (dispatches each active `meta.business_rules` row to a per-`rule_type` checker —
+   the 8 seeded rules have 5 distinct `rule_logic` JSONB shapes, and even **inconsistent key names within
+   the same `rule_type`**, so dispatch is defensive: unknown `rule_type` skipped, exceptions caught per-rule
+   rather than crashing the whole check). **Bug found and fixed while implementing this**: the column
+   resolver initially only handled `alias.column`-qualified references, silently missing every rule
+   violation in unqualified single-table queries — which is how the LLM writes SQL most of the time (e.g.
+   `SELECT SUM(interest_rate) FROM loans`, no table prefix). Fixed by resolving the empty-qualifier case to
+   the query's sole table when unambiguous (mirrors the resolution `sql_parser.py`'s hallucination check
+   already did correctly) — re-verify this if you touch either file, since it's an easy regression to
+   reintroduce.
+3. `app/validation/cost_estimator.py` — `EXPLAIN (FORMAT JSON)`, always safe/read-only regardless of
+   whether the query is ever executed. Threshold constants are generous defaults for this project's tiny
+   dataset, not tuned against real volume.
+
+**Full pipeline orchestration** (architecture doc §4) — `app/pipeline.py`:
+- `validate_sql()` combines all three validation modules into one `{valid, final_sql, errors, warnings,
+  cost}` report. Skips the `EXPLAIN` cost check if hallucination/join errors exist (running `EXPLAIN`
+  against a query that references a fake table/column would itself raise a DB error, not fail gracefully).
+- `generate_validated_sql()` is the end-to-end entry point: `build_prompt()` → `call_llm()` →
+  `validate_sql()` → on failure, **one** repair attempt — re-calls `call_llm()` with the validation errors
+  appended to the user prompt. This is a **separate** retry loop from `call_llm()`'s own internal repair
+  retry: that one fixes malformed *JSON shape*; this one fixes SQL *content* that fails validation
+  (hallucinated table, forbidden aggregation, etc.), per architecture doc §5's exact "one automatic repair
+  attempt" wording.
+- `execute_query()` is **opt-in only** — never auto-invoked by `generate_validated_sql()`. This is the
+  first code path in the whole project capable of running arbitrary LLM-generated SQL against the real
+  database, so real safety rails apply: `SET TRANSACTION READ ONLY` + `statement_timeout` + row cap via
+  `fetchmany()`, always `connection.rollback()`ed afterward, never committed. Live-verified as genuine
+  defense in depth, not just a Python-level check: calling it directly with an `UPDATE` string (bypassing
+  all validation entirely) is rejected by Postgres itself
+  (`ReadOnlySqlTransaction cannot execute UPDATE in a read-only transaction`).
+
+**End-to-end pipeline status**: question → `retrieve_context()` → `build_prompt()` → `call_llm()` →
+`validate_sql()` (+ one repair retry) is fully wired and live-verified via `app/pipeline.py`. Execution is
+wired but deliberately opt-in (`execute_query()`, never automatic). What's left per `docs/MODULES.md`: the
+API layer (`app/main.py`, `app/api/routes_*.py`) to expose this over HTTP.
 
 ## Working conventions in this repo
 

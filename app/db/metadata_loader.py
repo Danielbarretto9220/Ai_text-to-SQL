@@ -110,6 +110,30 @@ def load_query_patterns(connection):
         return cursor.fetchall()
 
 
+def load_business_rules(connection):
+    """Load active guardrail business rules."""
+
+    query = """
+        SELECT
+            rule_id,
+            rule_name,
+            description,
+            rule_type,
+            applies_to_tables,
+            applies_to_columns,
+            rule_logic,
+            severity,
+            is_active
+        FROM meta.business_rules
+        WHERE is_active
+        ORDER BY rule_id;
+    """
+
+    with connection.cursor() as cursor:
+        cursor.execute(query)
+        return cursor.fetchall()
+
+
 def main():
 
     print("Connecting to PostgreSQL...")
@@ -125,6 +149,7 @@ def main():
         relationships = load_relationship_metadata(connection)
         glossary = load_business_glossary(connection)
         query_patterns = load_query_patterns(connection)
+        business_rules = load_business_rules(connection)
 
         print("Metadata loaded successfully.")
         print("--------------------------------")
@@ -133,6 +158,7 @@ def main():
         print(f"Relationships:  {len(relationships)}")
         print(f"Glossary terms: {len(glossary)}")
         print(f"Query patterns: {len(query_patterns)}")
+        print(f"Business rules: {len(business_rules)}")
 
     finally:
         connection.close()
