@@ -65,8 +65,8 @@ The repo is laid out to match the target architecture in [`enterprise-text-to-sq
 ├── SQL/                       banking warehouse schema + dummy data (implemented)
 ├── app/
 │   ├── db/                    connection handling + metadata reads + SQLAlchemy ORM models (implemented)
-│   ├── retrieval/             document builder + vector search (implemented, semantic-only);
-│   │                          hybrid_search.py, rerank.py, relationship_graph.py (stubs)
+│   ├── retrieval/             document builder, vector search, hybrid search (RRF), cross-encoder
+│   │                          reranking, relationship-graph join paths, confidence scoring (implemented)
 │   ├── prompting/              prompt_builder.py (stub)
 │   ├── validation/            sql_parser.py, guardrails.py, cost_estimator.py (stubs)
 │   ├── llm/                   client.py, schemas.py (stubs)
@@ -86,7 +86,7 @@ The repo is laid out to match the target architecture in [`enterprise-text-to-sq
 
 ## Prerequisites & Setup
 
-To run the implemented scripts in this repo (`app/db/metadata_loader.py`, `app/db/models.py`, `workers/reindex_embeddings.py`, `workers/generate_docs.py`, `workers/drift_detector.py`, `workers/sync_data_content.py`, `workers/scheduler.py`, `app/retrieval/vector_search.py`, `test_connection.py`), you'll need:
+To run the implemented scripts in this repo (`app/db/metadata_loader.py`, `app/db/models.py`, `workers/reindex_embeddings.py`, `workers/generate_docs.py`, `workers/drift_detector.py`, `workers/sync_data_content.py`, `workers/scheduler.py`, `app/retrieval/vector_search.py`, `app/retrieval/hybrid_search.py`, `app/retrieval/rerank.py`, `app/retrieval/relationship_graph.py`, `app/retrieval/confidence.py`, `test_connection.py`), you'll need:
 
 - **PostgreSQL server**, with the **pgvector** extension enabled (used for storing/querying embeddings via the `vector` type and `<=>` distance operator)
 - **Python 3.x** and **pip**
@@ -97,7 +97,8 @@ To run the implemented scripts in this repo (`app/db/metadata_loader.py`, `app/d
   - `sqlalchemy` (ORM used by `app/db/models.py`)
   - `pgvector` (the Python package, not the Postgres extension — provides `pgvector.sqlalchemy.Vector` so SQLAlchemy understands the `vector(384)` column type)
   - `apscheduler` (drives `workers/scheduler.py`'s interval-based auto-sync trigger)
-- **Internet access on first run**, to download the `all-MiniLM-L6-v2` model from Hugging Face Hub
+- **Internet access on first run**, to download the `all-MiniLM-L6-v2` embedding model and the
+  `cross-encoder/ms-marco-MiniLM-L-6-v2` reranker model (used by `app/retrieval/rerank.py`) from Hugging Face Hub
 - A **`.env` file** in the project root (not included in the repo) defining:
   ```
   DB_HOST=localhost
@@ -153,10 +154,12 @@ There's no `pyproject.toml`/packaging yet, so run the moved modules from the rep
 
 ✔ Data-Content Auto-Sync (workers/sync_data_content.py — refreshes row_count_estimate and sample_values from live data, no DDL required; workers/scheduler.py runs it on an interval)
 
+✔ Retrieval Layer (app/retrieval/hybrid_search.py — BM25 + vector search via Reciprocal Rank Fusion; rerank.py — cross-encoder reranking; relationship_graph.py — BFS join-path resolution over meta.relationships; confidence.py — retrieve_context() pipeline entry point with confidence scoring + ambiguity-clarification path)
+
 ---
 
 ## Next Steps
 
-- Text-to-SQL Integration
+- Text-to-SQL Integration (Prompting, LLM client, SQL validation, and API layers — see docs/MODULES.md)
 
 See [`docs/MODULES.md`](docs/MODULES.md) for the full module-by-module list of what's left to build toward the target architecture in [`enterprise-text-to-sql-architecture.md`](enterprise-text-to-sql-architecture.md).

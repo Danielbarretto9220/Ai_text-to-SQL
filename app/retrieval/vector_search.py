@@ -40,7 +40,7 @@ def generate_query_embedding(model, query_text):
     return embedding
 
 
-def search_documents(connection, query_embedding, top_k=5):
+def search_documents(connection, query_embedding, top_k=5, document_types=None):
     """
     Search the pgvector database for the most similar RAG documents.
 
@@ -48,11 +48,17 @@ def search_documents(connection, query_embedding, top_k=5):
         embedding <=> query_embedding
 
     Smaller distance means more similar.
+
+    document_types: optional list of document_type values (e.g.
+    ["table", "column"]) to restrict the search to. None (default)
+    searches all document types, preserving prior behavior.
     """
 
     vector_string = "[" + ",".join(map(str, query_embedding)) + "]"
 
-    query = """
+    type_filter = "AND document_type = ANY(%s)" if document_types else ""
+
+    query = f"""
         SELECT
             document_id,
             document_type,
@@ -60,20 +66,20 @@ def search_documents(connection, query_embedding, top_k=5):
             metadata,
             embedding <=> %s::vector AS distance
         FROM meta.document_embeddings
+        WHERE TRUE
+        {type_filter}
         ORDER BY embedding <=> %s::vector
         LIMIT %s;
     """
 
+    params = [vector_string]
+    if document_types:
+        params.append(document_types)
+    params.extend([vector_string, top_k])
+
     with connection.cursor() as cursor:
 
-        cursor.execute(
-            query,
-            (
-                vector_string,
-                vector_string,
-                top_k,
-            ),
-        )
+        cursor.execute(query, params)
 
         return cursor.fetchall()
 

@@ -24,13 +24,13 @@ because it exists.
 - `METADATA/01-18_*.sql` — the whole `meta` schema and its population (tables, columns, relationships,
   business glossary, query patterns, change log, prompt versions, business rules, drift support)
 - `app/db/session.py`, `app/db/metadata_loader.py`, `app/db/models.py` (SQLAlchemy ORM over `meta.*`)
-- `app/retrieval/document_builder.py`, `app/retrieval/vector_search.py` (semantic-only retrieval)
+- `app/retrieval/` — `document_builder.py`, `vector_search.py`, `hybrid_search.py`, `rerank.py`,
+  `relationship_graph.py`, `confidence.py` (the full retrieval pipeline — see below)
 - `workers/reindex_embeddings.py`, `workers/generate_docs.py`, `workers/drift_detector.py`,
   `workers/sync_data_content.py`, `workers/scheduler.py`
 
 **Stubs (docstring only, no logic yet)** — implementing one of these means writing the first real code
 for that piece, guided by the architecture doc section referenced in its docstring:
-- `app/retrieval/hybrid_search.py`, `rerank.py`, `relationship_graph.py`
 - `app/prompting/prompt_builder.py`, `app/prompting/templates/`
 - `app/llm/client.py`, `app/llm/schemas.py`
 - `app/validation/sql_parser.py`, `guardrails.py`, `cost_estimator.py`
@@ -53,6 +53,10 @@ python -m workers.drift_detector
 python -m workers.sync_data_content
 python -m workers.scheduler        # long-running; Ctrl+C to stop
 python -m app.retrieval.vector_search
+python -m app.retrieval.hybrid_search
+python -m app.retrieval.rerank
+python -m app.retrieval.relationship_graph
+python -m app.retrieval.confidence  # full retrieval pipeline demo
 python test_connection.py     # standalone DB connectivity smoke test, run directly (not -m)
 ```
 
@@ -66,9 +70,10 @@ generated locally via `sentence-transformers/all-MiniLM-L6-v2` (384-dim vectors)
 `torch`/`transformers` and needs internet access on first run to pull the model from Hugging Face.
 
 Key packages: `psycopg2`, `python-dotenv`, `sqlalchemy` (2.0), `pgvector` (Python package, for
-`pgvector.sqlalchemy.Vector`), `sentence-transformers`, `apscheduler` (drives `workers/scheduler.py`).
-pgvector on Windows needs PG **17.3+** (17.0–17.2 has a Windows linker bug that breaks building the
-extension from source).
+`pgvector.sqlalchemy.Vector`), `sentence-transformers` (also provides `CrossEncoder`, used by
+`app/retrieval/rerank.py` — no separate reranking package needed), `apscheduler` (drives
+`workers/scheduler.py`). pgvector on Windows needs PG **17.3+** (17.0–17.2 has a Windows linker bug that
+breaks building the extension from source).
 
 ## Architecture — how the pieces fit together
 
@@ -121,16 +126,35 @@ Note: `meta.tables`/`meta.columns` have `BEFORE UPDATE`/`AFTER INSERT/UPDATE/DEL
 `meta.change_log` — but `TRUNCATE` (used by `METADATA/03_populate_meta_tables.sql`) bypasses row-level
 triggers, so a full reload of that script logs as fresh INSERTs, not DELETE+INSERT.
 
-**Retrieval today is semantic-only** (`app/retrieval/vector_search.py`): embed the question with the same
-MiniLM model used at indexing time, cosine-distance (`<=>`) search over `meta.document_embeddings`. The
-target design (architecture doc §2.1) is hybrid: BM25/keyword + vector via Reciprocal Rank Fusion, then
-cross-encoder re-ranking, then relationship-graph expansion — none of that (`hybrid_search.py`, `rerank.py`,
-`relationship_graph.py`) exists yet.
+**Retrieval pipeline** (architecture doc §2.1, §2.2) — `app/retrieval/confidence.py`'s `retrieve_context()`
+is the entry point, composing the other four modules in order:
+1. `hybrid_search.py` — dense leg reuses `vector_search.py`'s `load_embedding_model`/
+   `generate_query_embedding`/`search_documents`; sparse leg is `keyword_search()` against
+   `meta.document_embeddings.content_tsv` (a `GENERATED ALWAYS AS (to_tsvector(...)) STORED` column + GIN
+   index added by `METADATA/19_add_fulltext_search.sql`). Combined via `reciprocal_rank_fusion()`.
+   `search_documents()` and `keyword_search()` both take an optional `document_types` filter (e.g.
+   `["table", "column"]`) — default `None` preserves unfiltered search for existing callers.
+2. `rerank.py` — `cross-encoder/ms-marco-MiniLM-L-6-v2` (via `sentence_transformers.CrossEncoder`) narrows
+   the fused candidates down to a final top-k.
+3. `relationship_graph.py` — `build_graph()` loads a bidirectional adjacency dict from
+   `meta.relationships` (reuses `app/db/metadata_loader.load_relationship_metadata`, doesn't re-query).
+   `get_related_tables()` expands the reranked table set with directly-joined tables; `get_join_path()`
+   (BFS) resolves join paths between the final selected tables.
+4. `compute_confidence()`/`needs_clarification()` in `confidence.py` blend the top rerank score with FK-graph
+   connectivity into a confidence label, triggering a clarification flag on low confidence or two
+   similar-scoring candidates from different tables. **Known calibration caveat**: the reranker was trained
+   on passage-relevance data, so it scores aggregation-style questions ("which branch has the most
+   defaulted loans") much lower than lookup-style ones, even with correct table selection — thresholds are
+   left as tunable constants at the top of `confidence.py`, not hand-tuned against a handful of examples.
 
-**Target end-to-end pipeline** (not yet wired together — see architecture doc §4 for the full diagram):
-question → hybrid retrieval → relationship/join-path expansion → prompt construction (versioned templates
-from `meta.prompt_versions`) → LLM call (structured JSON output) → SQL validation (hallucination check
-against `meta.tables`/`meta.columns`, join check against `meta.relationships`, read-only enforcement, LIMIT
+`retrieve_context()` scopes table selection to `document_type in ("table", "column")` specifically —
+those are the only document types whose `metadata` carries `table_name` (glossary/query-pattern document
+metadata doesn't), so they're what drives which tables get selected/expanded.
+
+**Target end-to-end pipeline** (retrieval is done; prompting onward is not yet wired — see architecture doc
+§4 for the full diagram): question → `retrieve_context()` → prompt construction (versioned templates from
+`meta.prompt_versions`) → LLM call (structured JSON output) → SQL validation (hallucination check against
+`meta.tables`/`meta.columns`, join check against `meta.relationships`, read-only enforcement, LIMIT
 injection, business-rule check against `meta.business_rules`, EXPLAIN cost check) → execution against a
 read-only replica → result formatting.
 
