@@ -118,13 +118,16 @@ There's no `pyproject.toml`/packaging yet, so run the moved modules from the rep
 
 ✔ Vector Embeddings (pgvector)
 
+✔ Business Descriptions (table & column level)
+
+✔ Business Synonyms (column level)
+
+✔ Sample Values (column level)
+
 ---
 
 ## Next Steps
 
-- Business Descriptions (table & column level)
-- Business Synonyms (column level)
-- Sample Values (column level)
 - Query Pattern Metadata
 - Automatic Metadata Refresh
 - Change Log
