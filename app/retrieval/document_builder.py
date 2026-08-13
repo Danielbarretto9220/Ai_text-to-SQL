@@ -2,7 +2,7 @@
 Convert PostgreSQL metadata into searchable RAG documents.
 
 Source:
-    RAG/metadata_loader.py
+    app/db/metadata_loader.py
 
 The documents created here contain:
     - Table metadata
@@ -11,7 +11,7 @@ The documents created here contain:
     - Business glossary metadata
 """
 
-from metadata_loader import (
+from app.db.metadata_loader import (
     get_connection,
     load_table_metadata,
     load_column_metadata,

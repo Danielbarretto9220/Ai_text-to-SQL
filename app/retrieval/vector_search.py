@@ -1,26 +1,18 @@
-import os
+"""
+Pure vector (semantic) search over meta.document_embeddings.
 
-import psycopg2
-from dotenv import load_dotenv
+This is the vector leg of the hybrid_search.py pipeline described in
+architecture doc §2.1 — keyword/BM25 search, Reciprocal Rank Fusion, and
+cross-encoder re-ranking (rerank.py) are not yet implemented, so retrieval
+today is semantic-only.
+"""
+
 from sentence_transformers import SentenceTransformer
 
-
-load_dotenv()
+from app.db.session import get_connection
 
 
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-
-
-def get_connection():
-    """Create a connection to the PostgreSQL banking database."""
-
-    return psycopg2.connect(
-        host=os.getenv("DB_HOST"),
-        port=os.getenv("DB_PORT"),
-        database=os.getenv("DB_NAME"),
-        user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD"),
-    )
 
 
 def load_embedding_model():

@@ -1,28 +1,19 @@
-import os
-import psycopg2
+"""
+Embedding indexing worker: builds RAG documents from meta.* and upserts
+their embeddings into meta.document_embeddings (pgvector).
+
+Currently a full rebuild on every run. Incremental re-indexing via
+content_hash diffing (architecture doc §1.6) is not yet implemented.
+"""
+
 from psycopg2.extras import Json
-from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
 
-from metadata_documents import build_all_documents
-
-
-load_dotenv()
+from app.db.session import get_connection
+from app.retrieval.document_builder import build_all_documents
 
 
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-
-
-def get_connection():
-    """Create a connection to the PostgreSQL banking database."""
-
-    return psycopg2.connect(
-        host=os.getenv("DB_HOST"),
-        port=os.getenv("DB_PORT"),
-        database=os.getenv("DB_NAME"),
-        user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD"),
-    )
 
 
 def generate_document_id(document):
