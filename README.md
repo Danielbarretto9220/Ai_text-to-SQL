@@ -112,22 +112,22 @@ There's no `pyproject.toml`/packaging yet, so run the moved modules from the rep
 
 ✔ Column Metadata
 
-✔ Business Descriptions
-
-✔ Business Synonyms
-
-✔ Sample Values
-
 ✔ Relationship Metadata
+
+✔ Business Glossary
+
+✔ Vector Embeddings (pgvector)
 
 ---
 
 ## Next Steps
 
+- Business Descriptions (table & column level)
+- Business Synonyms (column level)
+- Sample Values (column level)
 - Query Pattern Metadata
 - Automatic Metadata Refresh
 - Change Log
-- Vector Embeddings (pgvector)
 - Text-to-SQL Integration
 
 See [`docs/MODULES.md`](docs/MODULES.md) for the full module-by-module list of what's left to build toward the target architecture in [`enterprise-text-to-sql-architecture.md`](enterprise-text-to-sql-architecture.md).

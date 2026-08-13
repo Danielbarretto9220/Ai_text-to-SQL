@@ -6,8 +6,8 @@ Status of every module called for by `enterprise-text-to-sql-architecture.md`, m
 
 | Module | Location | Status | Notes |
 |---|---|---|---|
-| `meta` schema (tables, columns, relationships, business_glossary) | `METADATA/01-10_*.sql` | ✅ | Populated tables per README "Current Progress" |
-| `meta.document_embeddings` (pgvector) | `METADATA/*.sql` | ✅ | Written to by `workers/reindex_embeddings.py` |
+| `meta` schema (tables, columns, relationships, business_glossary) | `METADATA/01-06_*.sql` | ✅ | Populated tables per README "Current Progress"; `07-10_*.sql` (business/column descriptions, synonyms, sample values) still empty stubs |
+| `meta.document_embeddings` (pgvector) | `METADATA/*.sql` | ✅ | Written to by `workers/reindex_embeddings.py`; pgvector 0.8.6 built from source on Windows (PG 17.3+ required — 17.0-17.2 has a Windows linker bug) |
 | `meta.query_patterns` (few-shot bank) | — | ⬜ | No table/loader yet (§1.2, §10) |
 | `meta.change_log` + `updated_at` trigger | — | ⬜ | Versioning/audit trail (§1.6) |
 | `meta.prompt_versions` | — | ⬜ | Prompt template versioning (§3.4) |
