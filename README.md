@@ -75,7 +75,9 @@ The repo is laid out to match the target architecture in [`enterprise-text-to-sq
 ├── workers/
 │   ├── reindex_embeddings.py  embedding indexing job (implemented, full-rebuild only)
 │   ├── generate_docs.py       auto-doc generation from information_schema (implemented)
-│   └── drift_detector.py      DDL drift → re-embed trigger (implemented)
+│   ├── drift_detector.py      DDL drift → re-embed trigger (implemented)
+│   ├── sync_data_content.py   row_count_estimate + sample_values refresh from live data (implemented)
+│   └── scheduler.py           runs sync_data_content on an interval (implemented)
 ├── test_connection.py         standalone DB connectivity check (implemented)
 └── docs/
     ├── MODULES.md              module-by-module build status
@@ -84,7 +86,7 @@ The repo is laid out to match the target architecture in [`enterprise-text-to-sq
 
 ## Prerequisites & Setup
 
-To run the implemented scripts in this repo (`app/db/metadata_loader.py`, `app/db/models.py`, `workers/reindex_embeddings.py`, `workers/generate_docs.py`, `workers/drift_detector.py`, `app/retrieval/vector_search.py`, `test_connection.py`), you'll need:
+To run the implemented scripts in this repo (`app/db/metadata_loader.py`, `app/db/models.py`, `workers/reindex_embeddings.py`, `workers/generate_docs.py`, `workers/drift_detector.py`, `workers/sync_data_content.py`, `workers/scheduler.py`, `app/retrieval/vector_search.py`, `test_connection.py`), you'll need:
 
 - **PostgreSQL server**, with the **pgvector** extension enabled (used for storing/querying embeddings via the `vector` type and `<=>` distance operator)
 - **Python 3.x** and **pip**
@@ -94,6 +96,7 @@ To run the implemented scripts in this repo (`app/db/metadata_loader.py`, `app/d
   - `sentence-transformers` (generates embeddings locally using `sentence-transformers/all-MiniLM-L6-v2`; pulls in `torch`/`transformers`)
   - `sqlalchemy` (ORM used by `app/db/models.py`)
   - `pgvector` (the Python package, not the Postgres extension — provides `pgvector.sqlalchemy.Vector` so SQLAlchemy understands the `vector(384)` column type)
+  - `apscheduler` (drives `workers/scheduler.py`'s interval-based auto-sync trigger)
 - **Internet access on first run**, to download the `all-MiniLM-L6-v2` model from Hugging Face Hub
 - A **`.env` file** in the project root (not included in the repo) defining:
   ```
@@ -147,6 +150,8 @@ There's no `pyproject.toml`/packaging yet, so run the moved modules from the rep
 ✔ Auto-Generated Schema Docs (docs/schema/*.md from information_schema + meta.*)
 
 ✔ Automatic Metadata Refresh (workers/drift_detector.py — DDL drift → sync meta.* → regenerate docs → incremental re-embed)
+
+✔ Data-Content Auto-Sync (workers/sync_data_content.py — refreshes row_count_estimate and sample_values from live data, no DDL required; workers/scheduler.py runs it on an interval)
 
 ---
 

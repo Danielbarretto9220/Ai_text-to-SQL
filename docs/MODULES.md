@@ -17,6 +17,8 @@ Status of every module called for by `enterprise-text-to-sql-architecture.md`, m
 | Metadata reader | `app/db/metadata_loader.py` | ✅ | Moved from `RAG/metadata_loader.py` |
 | Auto-generated Markdown docs from `information_schema` | `workers/generate_docs.py` | ✅ | Writes `docs/schema/<table>.md` + index, per `public`-schema table. Two-tier: structure (columns, PK/FK, row estimate, `pg_description` comments) always fresh from the catalog; business content merged in from `meta.*` as a best-effort second layer. Full rebuild each run, no diffing (§1.7) |
 | Drift detector (DDL change → re-embed) | `workers/drift_detector.py` | ✅ | Diffs live `information_schema`/`pg_constraint` against `meta.tables`/`meta.columns`; if structural drift found, syncs meta.\* (INSERT/UPDATE/DELETE — never touches business_description/synonyms/sample_values on existing rows), regenerates `docs/schema/*.md`, and incrementally re-embeds via `reindex_embeddings.incremental_reindex()`. True no-op if nothing changed. `METADATA/18_add_drift_support.sql` adds `content_hash` + the unique constraints the UPSERT logic needs (§1.6, §7) |
+| Data-content refresh (row counts, sample values) | `workers/sync_data_content.py` | ✅ | Complements the drift detector: refreshes `meta.tables.row_count_estimate` (for *all* known tables, not just newly-created ones) and `meta.columns.sample_values` (by re-running `METADATA/10_populate_sample_values.sql`'s DO block) — the two pieces of meta.\* that go stale from data changes alone, with no DDL involved. `run_full_sync()` runs structural sync first (`drift_detector.run_drift_check()`), then this refresh, then an unconditional doc regen + incremental re-embed so changed sample values/row counts actually get picked up (§1.6) |
+| Scheduler (interval-based auto-sync trigger) | `workers/scheduler.py` | ✅ | `APScheduler`-based long-running process (`python -m workers.scheduler`) that calls `sync_data_content.run_full_sync()` on an interval (`SYNC_INTERVAL_MINUTES` env var, default 60), firing once immediately on startup. Pure Python, OS-agnostic — no cron/Task Scheduler dependency, so the same process is meant to carry over unchanged to a future deployed/containerized environment. New pip dependency: `apscheduler` |
 
 ## Retrieval layer (§2)
 
@@ -92,5 +94,7 @@ python -m app.db.models
 python -m workers.reindex_embeddings
 python -m workers.generate_docs
 python -m workers.drift_detector
+python -m workers.sync_data_content
+python -m workers.scheduler
 python -m app.retrieval.vector_search
 ```
