@@ -34,6 +34,8 @@ The project includes:
 - meta.columns
 - meta.relationships
 - meta.business_glossary
+- meta.query_patterns
+- meta.document_embeddings
 
 ---
 
@@ -124,11 +126,12 @@ There's no `pyproject.toml`/packaging yet, so run the moved modules from the rep
 
 ✔ Sample Values (column level)
 
+✔ Query Pattern Metadata (few-shot SQL example bank)
+
 ---
 
 ## Next Steps
 
-- Query Pattern Metadata
 - Automatic Metadata Refresh
 - Change Log
 - Text-to-SQL Integration

@@ -37,6 +37,9 @@ def generate_document_id(document):
     elif document_type == "glossary":
         return f"glossary:{metadata['term_id']}"
 
+    elif document_type == "query_pattern":
+        return f"query_pattern:{metadata['pattern_id']}"
+
     raise ValueError(
         f"Unknown document type: {document_type}"
     )

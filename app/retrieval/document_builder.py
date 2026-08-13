@@ -9,6 +9,7 @@ The documents created here contain:
     - Column metadata
     - Relationship metadata
     - Business glossary metadata
+    - Query pattern metadata (few-shot examples)
 """
 
 from app.db.metadata_loader import (
@@ -17,6 +18,7 @@ from app.db.metadata_loader import (
     load_column_metadata,
     load_relationship_metadata,
     load_business_glossary,
+    load_query_patterns,
 )
 
 
@@ -211,6 +213,45 @@ Synonyms: {glossary_synonyms or "None"}
     return documents
 
 
+def build_query_pattern_documents(query_patterns):
+    """Convert few-shot query pattern rows into searchable documents."""
+
+    documents = []
+
+    for row in query_patterns:
+        (
+            pattern_id,
+            intent_description,
+            example_question,
+            sql_template,
+            tables_used,
+        ) = row
+
+        tables = ", ".join(tables_used or [])
+
+        text = f"""
+QUERY PATTERN
+Intent: {intent_description}
+Example Question: {example_question}
+SQL Template:
+{sql_template}
+Tables Used: {tables or "None"}
+""".strip()
+
+        documents.append(
+            {
+                "document_type": "query_pattern",
+                "content": text,
+                "metadata": {
+                    "pattern_id": pattern_id,
+                    "tables_used": tables_used,
+                },
+            }
+        )
+
+    return documents
+
+
 def build_all_documents(connection):
     """Load all metadata and convert it into RAG documents."""
 
@@ -218,6 +259,7 @@ def build_all_documents(connection):
     columns = load_column_metadata(connection)
     relationships = load_relationship_metadata(connection)
     glossary = load_business_glossary(connection)
+    query_patterns = load_query_patterns(connection)
 
     documents = []
 
@@ -225,6 +267,7 @@ def build_all_documents(connection):
     documents.extend(build_column_documents(columns))
     documents.extend(build_relationship_documents(relationships))
     documents.extend(build_glossary_documents(glossary))
+    documents.extend(build_query_pattern_documents(query_patterns))
 
     return documents
 

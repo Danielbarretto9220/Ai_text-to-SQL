@@ -91,6 +91,25 @@ def load_business_glossary(connection):
         return cursor.fetchall()
 
 
+def load_query_patterns(connection):
+    """Load few-shot query pattern metadata."""
+
+    query = """
+        SELECT
+            pattern_id,
+            intent_description,
+            example_question,
+            sql_template,
+            tables_used
+        FROM meta.query_patterns
+        ORDER BY pattern_id;
+    """
+
+    with connection.cursor() as cursor:
+        cursor.execute(query)
+        return cursor.fetchall()
+
+
 def main():
 
     print("Connecting to PostgreSQL...")
@@ -105,6 +124,7 @@ def main():
         columns = load_column_metadata(connection)
         relationships = load_relationship_metadata(connection)
         glossary = load_business_glossary(connection)
+        query_patterns = load_query_patterns(connection)
 
         print("Metadata loaded successfully.")
         print("--------------------------------")
@@ -112,6 +132,7 @@ def main():
         print(f"Columns:        {len(columns)}")
         print(f"Relationships:  {len(relationships)}")
         print(f"Glossary terms: {len(glossary)}")
+        print(f"Query patterns: {len(query_patterns)}")
 
     finally:
         connection.close()
