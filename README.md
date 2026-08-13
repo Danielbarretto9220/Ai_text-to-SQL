@@ -46,6 +46,7 @@ The project includes:
 
 - PostgreSQL
 - pgvector (PostgreSQL extension, for vector embeddings)
+- SQLAlchemy (ORM layer over meta.*)
 - Python 3.x
 - pgAdmin 4
 - SQL
@@ -63,7 +64,7 @@ The repo is laid out to match the target architecture in [`enterprise-text-to-sq
 ├── METADATA/                  meta schema + population SQL (implemented)
 ├── SQL/                       banking warehouse schema + dummy data (implemented)
 ├── app/
-│   ├── db/                    connection handling + metadata reads (implemented)
+│   ├── db/                    connection handling + metadata reads + SQLAlchemy ORM models (implemented)
 │   ├── retrieval/             document builder + vector search (implemented, semantic-only);
 │   │                          hybrid_search.py, rerank.py, relationship_graph.py (stubs)
 │   ├── prompting/              prompt_builder.py (stub)
@@ -73,15 +74,17 @@ The repo is laid out to match the target architecture in [`enterprise-text-to-sq
 │   └── main.py, config.py     FastAPI entrypoint + settings (stubs)
 ├── workers/
 │   ├── reindex_embeddings.py  embedding indexing job (implemented, full-rebuild only)
-│   ├── generate_docs.py       auto-doc generation from information_schema (stub)
-│   └── drift_detector.py      DDL drift → re-embed trigger (stub)
+│   ├── generate_docs.py       auto-doc generation from information_schema (implemented)
+│   └── drift_detector.py      DDL drift → re-embed trigger (implemented)
 ├── test_connection.py         standalone DB connectivity check (implemented)
-└── docs/MODULES.md            module-by-module build status
+└── docs/
+    ├── MODULES.md              module-by-module build status
+    └── schema/                 auto-generated per-table Markdown docs (generated, not hand-edited)
 ```
 
 ## Prerequisites & Setup
 
-To run the implemented scripts in this repo (`app/db/metadata_loader.py`, `workers/reindex_embeddings.py`, `app/retrieval/vector_search.py`, `test_connection.py`), you'll need:
+To run the implemented scripts in this repo (`app/db/metadata_loader.py`, `app/db/models.py`, `workers/reindex_embeddings.py`, `workers/generate_docs.py`, `workers/drift_detector.py`, `app/retrieval/vector_search.py`, `test_connection.py`), you'll need:
 
 - **PostgreSQL server**, with the **pgvector** extension enabled (used for storing/querying embeddings via the `vector` type and `<=>` distance operator)
 - **Python 3.x** and **pip**
@@ -89,6 +92,8 @@ To run the implemented scripts in this repo (`app/db/metadata_loader.py`, `worke
   - `psycopg2` (PostgreSQL driver)
   - `python-dotenv` (loads DB credentials from a `.env` file)
   - `sentence-transformers` (generates embeddings locally using `sentence-transformers/all-MiniLM-L6-v2`; pulls in `torch`/`transformers`)
+  - `sqlalchemy` (ORM used by `app/db/models.py`)
+  - `pgvector` (the Python package, not the Postgres extension — provides `pgvector.sqlalchemy.Vector` so SQLAlchemy understands the `vector(384)` column type)
 - **Internet access on first run**, to download the `all-MiniLM-L6-v2` model from Hugging Face Hub
 - A **`.env` file** in the project root (not included in the repo) defining:
   ```
@@ -137,11 +142,16 @@ There's no `pyproject.toml`/packaging yet, so run the moved modules from the rep
 
 ✔ Business Rules (meta.business_rules — guardrail definitions for SQL validation)
 
+✔ ORM/Typed Models (SQLAlchemy models over meta.*, app/db/models.py)
+
+✔ Auto-Generated Schema Docs (docs/schema/*.md from information_schema + meta.*)
+
+✔ Automatic Metadata Refresh (workers/drift_detector.py — DDL drift → sync meta.* → regenerate docs → incremental re-embed)
+
 ---
 
 ## Next Steps
 
-- Automatic Metadata Refresh (CI/CD drift detection, incremental re-embedding)
 - Text-to-SQL Integration
 
 See [`docs/MODULES.md`](docs/MODULES.md) for the full module-by-module list of what's left to build toward the target architecture in [`enterprise-text-to-sql-architecture.md`](enterprise-text-to-sql-architecture.md).

@@ -12,18 +12,18 @@ Status of every module called for by `enterprise-text-to-sql-architecture.md`, m
 | `meta.change_log` + `updated_at` trigger | `METADATA/13_create_change_log.sql` | ✅ | `meta.tables`/`meta.columns` get `BEFORE UPDATE` (bump `updated_at`) + `AFTER INSERT/UPDATE/DELETE` (log to `meta.change_log`) triggers; verified by a real row-count refresh (§1.6). Note: `TRUNCATE` (used by `03_populate_meta_tables.sql`) bypasses row-level triggers, so a full tables reload logs as fresh INSERTs, not DELETE+INSERT |
 | `meta.prompt_versions` | `METADATA/14-15_*.sql` | ✅ | v1 system prompt seeded, adapted from architecture doc §3.1 for this project's flat (non-medallion) schema; partial unique index enforces one active version per `prompt_name` (§3.4). Not yet consumed by any code — `app/llm/client.py` is still a stub |
 | `meta.business_rules` | `METADATA/16-17_*.sql` | ✅ | 8 hand-authored rules (structured JSONB `rule_logic`, engine-interpretable) grounded in real schema/data quirks — e.g. `emi_payments.amount_paid` is populated even on Missed/Overdue rows, so an unfiltered SUM overstates collections. Reuses the `meta.log_change()`/`set_updated_at()` triggers from `13_create_change_log.sql`. Not yet consumed — `app/validation/guardrails.py` (the rules engine that would read these) is still a stub (§5) |
-| ORM/typed models over `meta.*` | `app/db/models.py` | ⬜ | Stub |
+| ORM/typed models over `meta.*` | `app/db/models.py` | ✅ | SQLAlchemy 2.0 declarative models for all 9 `meta.*` tables (mirrors live DDL, verified against `information_schema`/`pg_constraint`, not just the SQL source); `pgvector.sqlalchemy.Vector` for `document_embeddings.embedding`; `get_engine()`/`get_session()` added to `app/db/session.py` alongside the existing `get_connection()` (raw-SQL modules unchanged). Adds `sqlalchemy` + `pgvector` as new pip dependencies |
 | DB connection handling | `app/db/session.py` | ✅ | Consolidated from the old per-script `get_connection()` |
 | Metadata reader | `app/db/metadata_loader.py` | ✅ | Moved from `RAG/metadata_loader.py` |
-| Auto-generated Markdown docs from `information_schema` | `workers/generate_docs.py` | ⬜ | Stub (§1.7) |
-| Drift detector (DDL change → re-embed) | `workers/drift_detector.py` | ⬜ | Stub (§1.6, §7) |
+| Auto-generated Markdown docs from `information_schema` | `workers/generate_docs.py` | ✅ | Writes `docs/schema/<table>.md` + index, per `public`-schema table. Two-tier: structure (columns, PK/FK, row estimate, `pg_description` comments) always fresh from the catalog; business content merged in from `meta.*` as a best-effort second layer. Full rebuild each run, no diffing (§1.7) |
+| Drift detector (DDL change → re-embed) | `workers/drift_detector.py` | ✅ | Diffs live `information_schema`/`pg_constraint` against `meta.tables`/`meta.columns`; if structural drift found, syncs meta.\* (INSERT/UPDATE/DELETE — never touches business_description/synonyms/sample_values on existing rows), regenerates `docs/schema/*.md`, and incrementally re-embeds via `reindex_embeddings.incremental_reindex()`. True no-op if nothing changed. `METADATA/18_add_drift_support.sql` adds `content_hash` + the unique constraints the UPSERT logic needs (§1.6, §7) |
 
 ## Retrieval layer (§2)
 
 | Module | Location | Status | Notes |
 |---|---|---|---|
 | Document/chunk builder | `app/retrieval/document_builder.py` | ✅ | Moved from `RAG/metadata_documents.py` |
-| Embedding generation + upsert (full rebuild) | `workers/reindex_embeddings.py` | 🟡 | Moved from `RAG/embedding_generator.py`; not incremental (no `content_hash` diffing yet) |
+| Embedding generation + upsert | `workers/reindex_embeddings.py` | ✅ | Moved from `RAG/embedding_generator.py`. `main()` still does a full rebuild (embeds everything, but now also stamps `content_hash`); `incremental_reindex()` (used by `drift_detector.py`) only (re-)embeds documents whose `content_hash` changed and deletes rows for documents that no longer exist |
 | Pure vector search | `app/retrieval/vector_search.py` | ✅ | Moved from `RAG/retriever.py`; semantic-only today |
 | Hybrid search (BM25 + vector, RRF) | `app/retrieval/hybrid_search.py` | ⬜ | Stub (§2.1) |
 | Cross-encoder re-ranking | `app/retrieval/rerank.py` | ⬜ | Stub (§2.1) |
@@ -80,7 +80,7 @@ Status of every module called for by `enterprise-text-to-sql-architecture.md`, m
 
 - `test_connection.py` — root-level connectivity smoke test, unchanged
 - `SQL/01-06_*.sql` — banking warehouse schema + dummy data + sample queries
-- `METADATA/01-17_*.sql` — `meta` schema + population scripts (incl. query pattern few-shot bank, change-log triggers, prompt versioning, business rules)
+- `METADATA/01-18_*.sql` — `meta` schema + population scripts (incl. query pattern few-shot bank, change-log triggers, prompt versioning, business rules, drift-detector support)
 
 ## Running the moved modules
 
@@ -88,6 +88,9 @@ There's no `pyproject.toml`/packaging yet, so run modules from the repo root usi
 
 ```
 python -m app.db.metadata_loader
+python -m app.db.models
 python -m workers.reindex_embeddings
+python -m workers.generate_docs
+python -m workers.drift_detector
 python -m app.retrieval.vector_search
 ```

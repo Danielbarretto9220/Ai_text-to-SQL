@@ -12,6 +12,8 @@ The documents created here contain:
     - Query pattern metadata (few-shot examples)
 """
 
+import hashlib
+
 from app.db.metadata_loader import (
     get_connection,
     load_table_metadata,
@@ -20,6 +22,16 @@ from app.db.metadata_loader import (
     load_business_glossary,
     load_query_patterns,
 )
+
+
+def compute_content_hash(document):
+    """Stable SHA-256 hash of a document's content, for change detection.
+
+    Used by workers/drift_detector.py and reindex_embeddings.incremental_reindex()
+    to tell which documents actually changed so only those get re-embedded.
+    """
+
+    return hashlib.sha256(document["content"].encode("utf-8")).hexdigest()
 
 
 def build_table_documents(tables):
