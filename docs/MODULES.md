@@ -11,7 +11,7 @@ Status of every module called for by `enterprise-text-to-sql-architecture.md`, m
 | `meta.query_patterns` (few-shot bank) | `METADATA/11-12_*.sql` | ✅ | 15 hand-authored NL question → SQL template examples, embedded and retrievable like the other meta docs (§1.2, §10) |
 | `meta.change_log` + `updated_at` trigger | `METADATA/13_create_change_log.sql` | ✅ | `meta.tables`/`meta.columns` get `BEFORE UPDATE` (bump `updated_at`) + `AFTER INSERT/UPDATE/DELETE` (log to `meta.change_log`) triggers; verified by a real row-count refresh (§1.6). Note: `TRUNCATE` (used by `03_populate_meta_tables.sql`) bypasses row-level triggers, so a full tables reload logs as fresh INSERTs, not DELETE+INSERT |
 | `meta.prompt_versions` | `METADATA/14-15_*.sql` | ✅ | v1 system prompt seeded, adapted from architecture doc §3.1 for this project's flat (non-medallion) schema; partial unique index enforces one active version per `prompt_name` (§3.4). Not yet consumed by any code — `app/llm/client.py` is still a stub |
-| `meta.business_rules` | — | ⬜ | Backs `app/validation/guardrails.py` business-rule checks (§5) |
+| `meta.business_rules` | `METADATA/16-17_*.sql` | ✅ | 8 hand-authored rules (structured JSONB `rule_logic`, engine-interpretable) grounded in real schema/data quirks — e.g. `emi_payments.amount_paid` is populated even on Missed/Overdue rows, so an unfiltered SUM overstates collections. Reuses the `meta.log_change()`/`set_updated_at()` triggers from `13_create_change_log.sql`. Not yet consumed — `app/validation/guardrails.py` (the rules engine that would read these) is still a stub (§5) |
 | ORM/typed models over `meta.*` | `app/db/models.py` | ⬜ | Stub |
 | DB connection handling | `app/db/session.py` | ✅ | Consolidated from the old per-script `get_connection()` |
 | Metadata reader | `app/db/metadata_loader.py` | ✅ | Moved from `RAG/metadata_loader.py` |
@@ -80,7 +80,7 @@ Status of every module called for by `enterprise-text-to-sql-architecture.md`, m
 
 - `test_connection.py` — root-level connectivity smoke test, unchanged
 - `SQL/01-06_*.sql` — banking warehouse schema + dummy data + sample queries
-- `METADATA/01-15_*.sql` — `meta` schema + population scripts (incl. query pattern few-shot bank, change-log triggers, prompt versioning)
+- `METADATA/01-17_*.sql` — `meta` schema + population scripts (incl. query pattern few-shot bank, change-log triggers, prompt versioning, business rules)
 
 ## Running the moved modules
 

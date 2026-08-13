@@ -38,6 +38,7 @@ The project includes:
 - meta.document_embeddings
 - meta.change_log
 - meta.prompt_versions
+- meta.business_rules
 
 ---
 
@@ -133,6 +134,8 @@ There's no `pyproject.toml`/packaging yet, so run the moved modules from the rep
 ✔ Change Log (audit trail on meta.tables/meta.columns changes)
 
 ✔ Prompt Versioning (meta.prompt_versions)
+
+✔ Business Rules (meta.business_rules — guardrail definitions for SQL validation)
 
 ---
 
