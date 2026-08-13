@@ -36,6 +36,8 @@ The project includes:
 - meta.business_glossary
 - meta.query_patterns
 - meta.document_embeddings
+- meta.change_log
+- meta.prompt_versions
 
 ---
 
@@ -128,12 +130,15 @@ There's no `pyproject.toml`/packaging yet, so run the moved modules from the rep
 
 ✔ Query Pattern Metadata (few-shot SQL example bank)
 
+✔ Change Log (audit trail on meta.tables/meta.columns changes)
+
+✔ Prompt Versioning (meta.prompt_versions)
+
 ---
 
 ## Next Steps
 
-- Automatic Metadata Refresh
-- Change Log
+- Automatic Metadata Refresh (CI/CD drift detection, incremental re-embedding)
 - Text-to-SQL Integration
 
 See [`docs/MODULES.md`](docs/MODULES.md) for the full module-by-module list of what's left to build toward the target architecture in [`enterprise-text-to-sql-architecture.md`](enterprise-text-to-sql-architecture.md).

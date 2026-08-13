@@ -9,8 +9,8 @@ Status of every module called for by `enterprise-text-to-sql-architecture.md`, m
 | `meta` schema (tables, columns, relationships, business_glossary) | `METADATA/01-10_*.sql` | ✅ | Fully populated per README "Current Progress" — includes business/column descriptions, synonyms, and sample values (`10_populate_sample_values.sql` pulls real distinct values dynamically via a `DO` block, not hardcoded) |
 | `meta.document_embeddings` (pgvector) | `METADATA/*.sql` | ✅ | Written to by `workers/reindex_embeddings.py`; pgvector 0.8.6 built from source on Windows (PG 17.3+ required — 17.0-17.2 has a Windows linker bug) |
 | `meta.query_patterns` (few-shot bank) | `METADATA/11-12_*.sql` | ✅ | 15 hand-authored NL question → SQL template examples, embedded and retrievable like the other meta docs (§1.2, §10) |
-| `meta.change_log` + `updated_at` trigger | — | ⬜ | Versioning/audit trail (§1.6) |
-| `meta.prompt_versions` | — | ⬜ | Prompt template versioning (§3.4) |
+| `meta.change_log` + `updated_at` trigger | `METADATA/13_create_change_log.sql` | ✅ | `meta.tables`/`meta.columns` get `BEFORE UPDATE` (bump `updated_at`) + `AFTER INSERT/UPDATE/DELETE` (log to `meta.change_log`) triggers; verified by a real row-count refresh (§1.6). Note: `TRUNCATE` (used by `03_populate_meta_tables.sql`) bypasses row-level triggers, so a full tables reload logs as fresh INSERTs, not DELETE+INSERT |
+| `meta.prompt_versions` | `METADATA/14-15_*.sql` | ✅ | v1 system prompt seeded, adapted from architecture doc §3.1 for this project's flat (non-medallion) schema; partial unique index enforces one active version per `prompt_name` (§3.4). Not yet consumed by any code — `app/llm/client.py` is still a stub |
 | `meta.business_rules` | — | ⬜ | Backs `app/validation/guardrails.py` business-rule checks (§5) |
 | ORM/typed models over `meta.*` | `app/db/models.py` | ⬜ | Stub |
 | DB connection handling | `app/db/session.py` | ✅ | Consolidated from the old per-script `get_connection()` |
@@ -80,7 +80,7 @@ Status of every module called for by `enterprise-text-to-sql-architecture.md`, m
 
 - `test_connection.py` — root-level connectivity smoke test, unchanged
 - `SQL/01-06_*.sql` — banking warehouse schema + dummy data + sample queries
-- `METADATA/01-12_*.sql` — `meta` schema + population scripts (incl. query pattern few-shot bank)
+- `METADATA/01-15_*.sql` — `meta` schema + population scripts (incl. query pattern few-shot bank, change-log triggers, prompt versioning)
 
 ## Running the moved modules
 
