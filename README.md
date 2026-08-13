@@ -69,9 +69,9 @@ The repo is laid out to match the target architecture in [`enterprise-text-to-sq
 │   │                          reranking, relationship-graph join paths, confidence scoring (implemented)
 │   ├── prompting/              prompt_builder.py + templates/user_prompt.txt (implemented)
 │   ├── validation/            sql_parser.py, guardrails.py, cost_estimator.py (stubs)
-│   ├── llm/                   client.py, schemas.py (stubs)
+│   ├── llm/                   client.py (Gemini via google-genai) + schemas.py (implemented)
 │   ├── api/                   routes_query.py, routes_feedback.py, routes_admin.py (stubs)
-│   └── main.py, config.py     FastAPI entrypoint + settings (stubs)
+│   └── main.py (stub), config.py (GEMINI_API_KEY/GEMINI_MODEL implemented)
 ├── workers/
 │   ├── reindex_embeddings.py  embedding indexing job (implemented, full-rebuild only)
 │   ├── generate_docs.py       auto-doc generation from information_schema (implemented)
@@ -86,19 +86,20 @@ The repo is laid out to match the target architecture in [`enterprise-text-to-sq
 
 ## Prerequisites & Setup
 
-To run the implemented scripts in this repo (`app/db/metadata_loader.py`, `app/db/models.py`, `workers/reindex_embeddings.py`, `workers/generate_docs.py`, `workers/drift_detector.py`, `workers/sync_data_content.py`, `workers/scheduler.py`, `app/retrieval/vector_search.py`, `app/retrieval/hybrid_search.py`, `app/retrieval/rerank.py`, `app/retrieval/relationship_graph.py`, `app/retrieval/confidence.py`, `app/prompting/prompt_builder.py`, `test_connection.py`), you'll need:
+To run the implemented scripts in this repo (`app/db/metadata_loader.py`, `app/db/models.py`, `workers/reindex_embeddings.py`, `workers/generate_docs.py`, `workers/drift_detector.py`, `workers/sync_data_content.py`, `workers/scheduler.py`, `app/retrieval/vector_search.py`, `app/retrieval/hybrid_search.py`, `app/retrieval/rerank.py`, `app/retrieval/relationship_graph.py`, `app/retrieval/confidence.py`, `app/prompting/prompt_builder.py`, `app/llm/client.py`, `test_connection.py`), you'll need:
 
 - **PostgreSQL server**, with the **pgvector** extension enabled (used for storing/querying embeddings via the `vector` type and `<=>` distance operator)
 - **Python 3.x** and **pip**
-- Python packages installed via pip:
-  - `psycopg2` (PostgreSQL driver)
-  - `python-dotenv` (loads DB credentials from a `.env` file)
-  - `sentence-transformers` (generates embeddings locally using `sentence-transformers/all-MiniLM-L6-v2`; pulls in `torch`/`transformers`)
-  - `sqlalchemy` (ORM used by `app/db/models.py`)
-  - `pgvector` (the Python package, not the Postgres extension — provides `pgvector.sqlalchemy.Vector` so SQLAlchemy understands the `vector(384)` column type)
-  - `apscheduler` (drives `workers/scheduler.py`'s interval-based auto-sync trigger)
+- Python packages: `pip install -r requirements.txt` (pinned versions — `psycopg2-binary`, `python-dotenv`,
+  `sentence-transformers`, `sqlalchemy`, `pgvector`, `apscheduler`, `google-genai`, `pydantic`)
+  - `sentence-transformers` generates embeddings locally (`all-MiniLM-L6-v2`) and drives the reranker
+    (`cross-encoder/ms-marco-MiniLM-L-6-v2`); pulls in `torch`/`transformers`
+  - `pgvector` is the Python package (not the Postgres extension) — provides `pgvector.sqlalchemy.Vector`
+  - `apscheduler` drives `workers/scheduler.py`'s interval-based auto-sync trigger
+  - `google-genai` is the Gemini SDK used by `app/llm/client.py`; `pydantic` backs `app/llm/schemas.py`'s
+    structured-output models
 - **Internet access on first run**, to download the `all-MiniLM-L6-v2` embedding model and the
-  `cross-encoder/ms-marco-MiniLM-L-6-v2` reranker model (used by `app/retrieval/rerank.py`) from Hugging Face Hub
+  `cross-encoder/ms-marco-MiniLM-L-6-v2` reranker model from Hugging Face Hub, and to call the Gemini API
 - A **`.env` file** in the project root (not included in the repo) defining:
   ```
   DB_HOST=localhost
@@ -106,9 +107,13 @@ To run the implemented scripts in this repo (`app/db/metadata_loader.py`, `app/d
   DB_NAME=your_db_name
   DB_USER=your_db_user
   DB_PASSWORD=your_db_password
+  GEMINI_API_KEY=your_google_ai_studio_api_key
+  GEMINI_MODEL=gemini-flash-latest
   ```
-
-No LLM API key (OpenAI, Anthropic, etc.) is required for the code currently in this repo — embeddings are generated locally.
+  `GEMINI_API_KEY` is from [Google AI Studio](https://aistudio.google.com/). `GEMINI_MODEL` is optional
+  (defaults to `gemini-flash-latest`, a model-family alias that stays current without needing code changes
+  as Google ships newer generations — a pinned model string like `gemini-2.5-flash` can and did go stale
+  mid-project).
 
 There's no `pyproject.toml`/packaging yet, so run the moved modules from the repo root with `-m` so `app`/`workers` resolve as packages, e.g. `python -m workers.reindex_embeddings`.
 
@@ -158,10 +163,12 @@ There's no `pyproject.toml`/packaging yet, so run the moved modules from the rep
 
 ✔ Prompting (app/prompting/prompt_builder.py — reads the already-seeded system prompt from meta.prompt_versions, assembles CONTEXT from retrieve_context() plus two extra hybrid_search() calls for business_terms/query_patterns, and renders the final user prompt via app/prompting/templates/user_prompt.txt)
 
+✔ LLM Client (app/llm/client.py — Google AI Studio/Gemini via the google-genai SDK; app/llm/schemas.py — a single Pydantic SQLGenerationResponse covering both the normal SQL-response and insufficient_context escape-hatch branches of the seeded system prompt. Live-verified end to end: a lookup question, an aggregation question the retrieval layer flagged low-confidence for, and an out-of-scope question that correctly triggered the insufficient_context response)
+
 ---
 
 ## Next Steps
 
-- Text-to-SQL Integration (LLM client, SQL validation, and API layers — see docs/MODULES.md)
+- Text-to-SQL Integration (SQL validation/guardrails and API layers — see docs/MODULES.md)
 
 See [`docs/MODULES.md`](docs/MODULES.md) for the full module-by-module list of what's left to build toward the target architecture in [`enterprise-text-to-sql-architecture.md`](enterprise-text-to-sql-architecture.md).

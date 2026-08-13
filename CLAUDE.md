@@ -27,14 +27,15 @@ because it exists.
 - `app/retrieval/` — `document_builder.py`, `vector_search.py`, `hybrid_search.py`, `rerank.py`,
   `relationship_graph.py`, `confidence.py` (the full retrieval pipeline — see below)
 - `app/prompting/prompt_builder.py` + `app/prompting/templates/user_prompt.txt` (see below)
+- `app/llm/client.py` (Gemini via `google-genai`) + `app/llm/schemas.py` (see below)
+- `app/config.py` (partial — `GEMINI_API_KEY`/`GEMINI_MODEL` only so far)
 - `workers/reindex_embeddings.py`, `workers/generate_docs.py`, `workers/drift_detector.py`,
   `workers/sync_data_content.py`, `workers/scheduler.py`
 
 **Stubs (docstring only, no logic yet)** — implementing one of these means writing the first real code
 for that piece, guided by the architecture doc section referenced in its docstring:
-- `app/llm/client.py`, `app/llm/schemas.py`
 - `app/validation/sql_parser.py`, `guardrails.py`, `cost_estimator.py`
-- `app/main.py`, `app/config.py`, `app/api/routes_*.py`
+- `app/main.py`, `app/api/routes_*.py`
 
 When picking up a stub, read its docstring first (it cites the exact architecture-doc section) and read
 that section before writing code.
@@ -58,23 +59,31 @@ python -m app.retrieval.rerank
 python -m app.retrieval.relationship_graph
 python -m app.retrieval.confidence  # full retrieval pipeline demo
 python -m app.prompting.prompt_builder  # full prompting pipeline demo
+python -m app.llm.client  # full pipeline demo incl. a real Gemini call
 python test_connection.py     # standalone DB connectivity smoke test, run directly (not -m)
 ```
 
 There is no test suite yet (`tests/` is an empty package) and no lint/format config in the repo.
+`pip install -r requirements.txt` installs pinned dependencies (added alongside the LLM client module).
 
 ### Environment
 
-Requires a local `.env` (gitignored) with `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` — a
-PostgreSQL instance with the **pgvector** extension enabled. No LLM API key is needed yet; embeddings are
-generated locally via `sentence-transformers/all-MiniLM-L6-v2` (384-dim vectors), which pulls in
-`torch`/`transformers` and needs internet access on first run to pull the model from Hugging Face.
+Requires a local `.env` (gitignored) with `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, plus
+`GEMINI_API_KEY` (from [Google AI Studio](https://aistudio.google.com/)) and optionally `GEMINI_MODEL`
+(defaults to `gemini-flash-latest` — a model-family alias, not a pinned version string; a pinned string
+like `gemini-2.5-flash` went stale mid-project when Google moved new API keys to newer model generations,
+so prefer the `-latest` alias over pinning unless a specific model's behavior is required) — a PostgreSQL
+instance with the **pgvector** extension enabled. Embeddings are generated locally via
+`sentence-transformers/all-MiniLM-L6-v2` (384-dim vectors), which pulls in `torch`/`transformers` and needs
+internet access on first run to pull the model from Hugging Face; the LLM client needs internet access for
+every call (it's a live API, no local fallback).
 
 Key packages: `psycopg2`, `python-dotenv`, `sqlalchemy` (2.0), `pgvector` (Python package, for
 `pgvector.sqlalchemy.Vector`), `sentence-transformers` (also provides `CrossEncoder`, used by
 `app/retrieval/rerank.py` — no separate reranking package needed), `apscheduler` (drives
-`workers/scheduler.py`). pgvector on Windows needs PG **17.3+** (17.0–17.2 has a Windows linker bug that
-breaks building the extension from source).
+`workers/scheduler.py`), `google-genai` (Gemini SDK — chosen over the legacy `google-generativeai` package),
+`pydantic` (backs `app/llm/schemas.py`). pgvector on Windows needs PG **17.3+** (17.0–17.2 has a Windows
+linker bug that breaks building the extension from source).
 
 ## Architecture — how the pieces fit together
 
@@ -174,10 +183,37 @@ point, composing `retrieve_context()` with prompt assembly:
 it still returns a fully-assembled prompt and surfaces the flag, leaving that policy decision (ask vs.
 proceed anyway) to whichever future caller owns it.
 
-**Target end-to-end pipeline** (retrieval + prompting are done; LLM call onward is not yet wired — see
-architecture doc §4 for the full diagram): question → `retrieve_context()` → `build_prompt()` → LLM call
-(structured JSON output) → SQL validation (hallucination check against `meta.tables`/`meta.columns`, join
-check against `meta.relationships`, read-only enforcement, LIMIT injection, business-rule check against
+**LLM client** (architecture doc §3.4, §6.5, §8) — `app/llm/client.py`'s `call_llm()` is the entry point,
+taking `build_prompt()`'s output dict directly (no DB access, no retrieval re-run):
+1. `get_client()` builds a `genai.Client(api_key=app.config.GEMINI_API_KEY)` — Google AI Studio/Gemini via
+   the `google-genai` SDK.
+2. `generate_sql()` calls `client.models.generate_content()` with `temperature=0` (§3.4 determinism) and
+   `response_schema=SQLGenerationResponse` + `response_mime_type="application/json"` — Gemini enforces the
+   output shape at generation time, stronger than prompt instructions alone.
+3. `app/llm/schemas.py`'s `SQLGenerationResponse` is a single Pydantic model with every field optional,
+   covering **both** branches of the seeded prompt's contract: a normal `{sql, tables_used, assumptions,
+   confidence}` response, and the `{error: "insufficient_context", missing}` escape hatch (rule 1) — one
+   model because Gemini's `response_schema` locks the model into exactly one schema, so both branches must
+   be representable in it. `is_error_response()` lets callers branch.
+4. On parse/validation failure, `call_llm()` does **one** hand-rolled repair retry (re-calls with the error
+   appended, per §3.4) — not a generic retry library; that's a different concern (network transience, which
+   this module doesn't handle — the SDK's own internal retry covers that, and did visibly exhaust once
+   during testing on a transient `503`).
+
+Live-verified: a lookup question generated correct SQL first-try; an aggregation question that the
+retrieval layer flagged `low` confidence (the known reranker calibration caveat above) still produced
+correct SQL with the LLM self-reporting `high` confidence — validating why `build_prompt()`/`call_llm()`
+deliberately don't short-circuit on `clarification_needed`; and an out-of-scope question correctly
+triggered the `insufficient_context` escape hatch.
+
+`app/llm/client.py` does **not** do SQL validation, guardrails, cost estimation, or full pipeline
+orchestration — those remain separate, unbuilt items (`app/validation/*`, and an orchestration layer with
+no file yet) per `docs/MODULES.md` §4/§5.
+
+**Target end-to-end pipeline** (retrieval, prompting, and the LLM client are done; validation/execution are
+not yet wired — see architecture doc §4 for the full diagram): question → `retrieve_context()` →
+`build_prompt()` → `call_llm()` → SQL validation (hallucination check against `meta.tables`/`meta.columns`,
+join check against `meta.relationships`, read-only enforcement, LIMIT injection, business-rule check against
 `meta.business_rules`, EXPLAIN cost check) → execution against a read-only replica → result formatting.
 
 ## Working conventions in this repo

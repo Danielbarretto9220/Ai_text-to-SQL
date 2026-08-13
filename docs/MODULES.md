@@ -45,8 +45,8 @@ Status of every module called for by `enterprise-text-to-sql-architecture.md`, m
 
 | Module | Location | Status | Notes |
 |---|---|---|---|
-| LLM client (provider-agnostic) | `app/llm/client.py` | ⬜ | Stub (§6.5, §8) |
-| Structured-output schemas | `app/llm/schemas.py` | ⬜ | Stub (§3.4) |
+| LLM client | `app/llm/client.py` | ✅ | Google AI Studio / Gemini via the `google-genai` SDK (chosen over the legacy `google-generativeai` package). `call_llm()` takes `prompt_builder.build_prompt()`'s output directly — no DB access, no retrieval re-run. Uses Gemini's `response_schema` (constrains output to `SQLGenerationResponse` at generation time) + `temperature=0` (§3.4 determinism), plus one hand-rolled repair retry on parse/validation failure (not a generic retry library — no existing pattern for that in the repo, and it's a different concern than network transience). Live-tested: correct SQL for a lookup question, correct SQL for an aggregation question even when retrieval flagged low confidence (demonstrates why `build_prompt()`/`call_llm()` deliberately don't short-circuit on `clarification_needed`), and correct use of the `error: insufficient_context` escape hatch for an out-of-scope question. Does **not** do SQL validation, guardrails, cost estimation, or orchestration — those stay separate, unbuilt items below (§6.5, §8) |
+| Structured-output schemas | `app/llm/schemas.py` | ✅ | One `SQLGenerationResponse` Pydantic model covers both branches of the seeded system prompt's contract (normal SQL response and the `{"error": "insufficient_context", ...}` shape) — Gemini's `response_schema` constrains the model to exactly one schema, so every field is optional and `is_error_response()` lets callers branch (§3.4) |
 | SQL parser / hallucination check | `app/validation/sql_parser.py` | ⬜ | Stub — `sqlglot`/`pglast` (§5) |
 | Guardrails (read-only, LIMIT, complexity, business rules) | `app/validation/guardrails.py` | ⬜ | Stub (§5) |
 | Cost estimator (`EXPLAIN` check) | `app/validation/cost_estimator.py` | ⬜ | Stub (§5) |
@@ -57,7 +57,7 @@ Status of every module called for by `enterprise-text-to-sql-architecture.md`, m
 | Module | Location | Status | Notes |
 |---|---|---|---|
 | FastAPI entrypoint | `app/main.py` | ⬜ | Stub |
-| App settings | `app/config.py` | ⬜ | Stub |
+| App settings | `app/config.py` | 🟡 | `GEMINI_API_KEY`/`GEMINI_MODEL` only so far (module-level `os.getenv()` constants, matching `workers/scheduler.py`'s existing convention — no settings-class abstraction introduced). Other app-wide settings (auth, etc.) not yet needed |
 | `POST /api/v1/query` | `app/api/routes_query.py` | ⬜ | Stub |
 | `POST /api/v1/feedback` | `app/api/routes_feedback.py` | ⬜ | Stub |
 | `POST /api/v1/admin/reindex`, `/health`, `/metrics`, `/schema/search` | `app/api/routes_admin.py` | ⬜ | Stub |
@@ -88,7 +88,9 @@ Status of every module called for by `enterprise-text-to-sql-architecture.md`, m
 
 ## Running the moved modules
 
-There's no `pyproject.toml`/packaging yet, so run modules from the repo root using `-m` so `app`/`workers` resolve as packages, e.g.:
+`pip install -r requirements.txt` installs the pinned dependencies (added alongside the LLM client module —
+previously only tracked in README prose). There's still no `pyproject.toml`/packaging, so run modules from
+the repo root using `-m` so `app`/`workers` resolve as packages, e.g.:
 
 ```
 python -m app.db.metadata_loader
@@ -104,4 +106,5 @@ python -m app.retrieval.hybrid_search
 python -m app.retrieval.rerank
 python -m app.retrieval.confidence
 python -m app.prompting.prompt_builder
+python -m app.llm.client
 ```
