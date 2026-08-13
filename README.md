@@ -67,7 +67,7 @@ The repo is laid out to match the target architecture in [`enterprise-text-to-sq
 │   ├── db/                    connection handling + metadata reads + SQLAlchemy ORM models (implemented)
 │   ├── retrieval/             document builder, vector search, hybrid search (RRF), cross-encoder
 │   │                          reranking, relationship-graph join paths, confidence scoring (implemented)
-│   ├── prompting/              prompt_builder.py (stub)
+│   ├── prompting/              prompt_builder.py + templates/user_prompt.txt (implemented)
 │   ├── validation/            sql_parser.py, guardrails.py, cost_estimator.py (stubs)
 │   ├── llm/                   client.py, schemas.py (stubs)
 │   ├── api/                   routes_query.py, routes_feedback.py, routes_admin.py (stubs)
@@ -86,7 +86,7 @@ The repo is laid out to match the target architecture in [`enterprise-text-to-sq
 
 ## Prerequisites & Setup
 
-To run the implemented scripts in this repo (`app/db/metadata_loader.py`, `app/db/models.py`, `workers/reindex_embeddings.py`, `workers/generate_docs.py`, `workers/drift_detector.py`, `workers/sync_data_content.py`, `workers/scheduler.py`, `app/retrieval/vector_search.py`, `app/retrieval/hybrid_search.py`, `app/retrieval/rerank.py`, `app/retrieval/relationship_graph.py`, `app/retrieval/confidence.py`, `test_connection.py`), you'll need:
+To run the implemented scripts in this repo (`app/db/metadata_loader.py`, `app/db/models.py`, `workers/reindex_embeddings.py`, `workers/generate_docs.py`, `workers/drift_detector.py`, `workers/sync_data_content.py`, `workers/scheduler.py`, `app/retrieval/vector_search.py`, `app/retrieval/hybrid_search.py`, `app/retrieval/rerank.py`, `app/retrieval/relationship_graph.py`, `app/retrieval/confidence.py`, `app/prompting/prompt_builder.py`, `test_connection.py`), you'll need:
 
 - **PostgreSQL server**, with the **pgvector** extension enabled (used for storing/querying embeddings via the `vector` type and `<=>` distance operator)
 - **Python 3.x** and **pip**
@@ -156,10 +156,12 @@ There's no `pyproject.toml`/packaging yet, so run the moved modules from the rep
 
 ✔ Retrieval Layer (app/retrieval/hybrid_search.py — BM25 + vector search via Reciprocal Rank Fusion; rerank.py — cross-encoder reranking; relationship_graph.py — BFS join-path resolution over meta.relationships; confidence.py — retrieve_context() pipeline entry point with confidence scoring + ambiguity-clarification path)
 
+✔ Prompting (app/prompting/prompt_builder.py — reads the already-seeded system prompt from meta.prompt_versions, assembles CONTEXT from retrieve_context() plus two extra hybrid_search() calls for business_terms/query_patterns, and renders the final user prompt via app/prompting/templates/user_prompt.txt)
+
 ---
 
 ## Next Steps
 
-- Text-to-SQL Integration (Prompting, LLM client, SQL validation, and API layers — see docs/MODULES.md)
+- Text-to-SQL Integration (LLM client, SQL validation, and API layers — see docs/MODULES.md)
 
 See [`docs/MODULES.md`](docs/MODULES.md) for the full module-by-module list of what's left to build toward the target architecture in [`enterprise-text-to-sql-architecture.md`](enterprise-text-to-sql-architecture.md).

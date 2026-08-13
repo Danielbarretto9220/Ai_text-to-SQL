@@ -37,8 +37,9 @@ Status of every module called for by `enterprise-text-to-sql-architecture.md`, m
 
 | Module | Location | Status | Notes |
 |---|---|---|---|
-| System prompt template | `app/prompting/templates/` | ⬜ | Empty, template text from §3.1 not yet added |
-| Prompt builder (context injection) | `app/prompting/prompt_builder.py` | ⬜ | Stub (§3.2, §3.3) |
+| System prompt | `meta.prompt_versions` (DB) + `app/prompting/prompt_builder.py`'s `get_active_prompt()` | ✅ | §3.1's template was already seeded as DB data back in the Data Layer phase (`METADATA/14-15_*.sql`) — `prompt_builder.py` reads it (`WHERE prompt_name = ... AND is_active`) rather than duplicating the text in Python. Raises if no active row exists (fail fast, no silent fallback) |
+| User prompt template | `app/prompting/templates/user_prompt.txt` | ✅ | §3.3's QUESTION/CONTEXT/OUTPUT-FORMAT skeleton, interpolated via plain Python `.format()` — no templating library added (none existed in the repo; only two interpolation points needed) |
+| Prompt builder (context injection) | `app/prompting/prompt_builder.py` | ✅ | `assemble_context()` builds §3.2's context shape (tables/columns/join_paths/business_terms/query_patterns/confidence) by reusing `app/db/metadata_loader.py`'s existing loaders, filtered to the tables `retrieve_context()` selected. **Closed a real gap**: the seeded system prompt's rule 7 ("prefer a matching query_pattern example") and §3.2's `business_terms` section both assume retrieval fetched glossary/query_pattern docs, but `confidence.retrieve_context()` scopes hybrid search to `document_types=["table","column"]` only — `prompt_builder.py` adds two small extra `hybrid_search()` calls (`fetch_business_terms()`, `fetch_query_patterns()`) to actually populate those sections. `build_prompt()` does **not** short-circuit on `clarification_needed` — it still assembles a full prompt and surfaces the flag, leaving that policy decision to the caller (§3.2, §3.3) |
 
 ## SQL generation & validation (§4, §5)
 
@@ -102,4 +103,5 @@ python -m app.retrieval.relationship_graph
 python -m app.retrieval.hybrid_search
 python -m app.retrieval.rerank
 python -m app.retrieval.confidence
+python -m app.prompting.prompt_builder
 ```

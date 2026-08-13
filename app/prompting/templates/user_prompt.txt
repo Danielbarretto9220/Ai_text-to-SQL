@@ -1,0 +1,12 @@
+QUESTION: {question}
+
+CONTEXT:
+{context_json}
+
+OUTPUT FORMAT (strict JSON):
+{{
+  "sql": "<postgresql query>",
+  "tables_used": ["..."],
+  "assumptions": ["..."],
+  "confidence": "high|medium|low"
+}}

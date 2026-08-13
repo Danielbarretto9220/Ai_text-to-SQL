@@ -26,12 +26,12 @@ because it exists.
 - `app/db/session.py`, `app/db/metadata_loader.py`, `app/db/models.py` (SQLAlchemy ORM over `meta.*`)
 - `app/retrieval/` — `document_builder.py`, `vector_search.py`, `hybrid_search.py`, `rerank.py`,
   `relationship_graph.py`, `confidence.py` (the full retrieval pipeline — see below)
+- `app/prompting/prompt_builder.py` + `app/prompting/templates/user_prompt.txt` (see below)
 - `workers/reindex_embeddings.py`, `workers/generate_docs.py`, `workers/drift_detector.py`,
   `workers/sync_data_content.py`, `workers/scheduler.py`
 
 **Stubs (docstring only, no logic yet)** — implementing one of these means writing the first real code
 for that piece, guided by the architecture doc section referenced in its docstring:
-- `app/prompting/prompt_builder.py`, `app/prompting/templates/`
 - `app/llm/client.py`, `app/llm/schemas.py`
 - `app/validation/sql_parser.py`, `guardrails.py`, `cost_estimator.py`
 - `app/main.py`, `app/config.py`, `app/api/routes_*.py`
@@ -57,6 +57,7 @@ python -m app.retrieval.hybrid_search
 python -m app.retrieval.rerank
 python -m app.retrieval.relationship_graph
 python -m app.retrieval.confidence  # full retrieval pipeline demo
+python -m app.prompting.prompt_builder  # full prompting pipeline demo
 python test_connection.py     # standalone DB connectivity smoke test, run directly (not -m)
 ```
 
@@ -151,12 +152,33 @@ is the entry point, composing the other four modules in order:
 those are the only document types whose `metadata` carries `table_name` (glossary/query-pattern document
 metadata doesn't), so they're what drives which tables get selected/expanded.
 
-**Target end-to-end pipeline** (retrieval is done; prompting onward is not yet wired — see architecture doc
-§4 for the full diagram): question → `retrieve_context()` → prompt construction (versioned templates from
-`meta.prompt_versions`) → LLM call (structured JSON output) → SQL validation (hallucination check against
-`meta.tables`/`meta.columns`, join check against `meta.relationships`, read-only enforcement, LIMIT
-injection, business-rule check against `meta.business_rules`, EXPLAIN cost check) → execution against a
-read-only replica → result formatting.
+**Prompting** (architecture doc §3) — `app/prompting/prompt_builder.py`'s `build_prompt()` is the entry
+point, composing `retrieve_context()` with prompt assembly:
+1. `get_active_prompt()` reads the system prompt from `meta.prompt_versions` (`WHERE prompt_name = ... AND
+   is_active`) — **this was already seeded** back in the Data Layer phase (`METADATA/14-15_*.sql`); the
+   prompt text is not duplicated in Python. Raises if no active row exists rather than falling back silently.
+2. `retrieve_context()` runs (reused from `app/retrieval/confidence.py`, not reimplemented).
+3. `fetch_business_terms()`/`fetch_query_patterns()` — two small extra `hybrid_search()` calls
+   (`document_types=["glossary"]` / `["query_pattern"]`) that close a real gap: the seeded prompt's rule 7
+   ("prefer a matching query_pattern example") and architecture doc §3.2's `business_terms` context section
+   both assume this content is available, but `retrieve_context()` itself only fetches
+   `document_type in ("table", "column")`.
+4. `assemble_context()` builds §3.2's CONTEXT shape by reusing `app/db/metadata_loader.py`'s existing
+   `load_table_metadata`/`load_column_metadata` (filtered to the tables `retrieve_context()` selected) —
+   not by re-parsing the free-text `content` field of retrieved documents.
+5. `build_user_prompt()` interpolates the question + CONTEXT JSON into
+   `app/prompting/templates/user_prompt.txt` (plain `.format()`, no templating library — none existed in
+   the repo and only two interpolation points are needed).
+
+`build_prompt()` deliberately does **not** short-circuit when `retrieval["clarification_needed"]` is set —
+it still returns a fully-assembled prompt and surfaces the flag, leaving that policy decision (ask vs.
+proceed anyway) to whichever future caller owns it.
+
+**Target end-to-end pipeline** (retrieval + prompting are done; LLM call onward is not yet wired — see
+architecture doc §4 for the full diagram): question → `retrieve_context()` → `build_prompt()` → LLM call
+(structured JSON output) → SQL validation (hallucination check against `meta.tables`/`meta.columns`, join
+check against `meta.relationships`, read-only enforcement, LIMIT injection, business-rule check against
+`meta.business_rules`, EXPLAIN cost check) → execution against a read-only replica → result formatting.
 
 ## Working conventions in this repo
 
