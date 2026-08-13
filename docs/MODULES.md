@@ -2,6 +2,8 @@
 
 Status of every module called for by `enterprise-text-to-sql-architecture.md`, mapped to its location in the repo. Legend: ✅ implemented · 🟡 partial (works standalone, not to the doc's full spec) · ⬜ not started (stub file only, no logic).
 
+> The remaining ⬜ items in "API & app (§6)" — plus the project's first test suite — are planned in detail in [`API_AND_TESTING_PLAN.md`](API_AND_TESTING_PLAN.md), including which §6 items (auth, Redis, Docker/K8s) are deliberately deferred and why.
+
 ## Data layer (§1)
 
 | Module | Location | Status | Notes |

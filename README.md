@@ -174,6 +174,6 @@ There's no `pyproject.toml`/packaging yet, so run the moved modules from the rep
 
 ## Next Steps
 
-- Text-to-SQL Integration (API layer — see docs/MODULES.md)
+- API & app module (FastAPI service, Streamlit UI, `/metrics`) + the project's first end-to-end test suite — planned in detail in [`docs/API_AND_TESTING_PLAN.md`](docs/API_AND_TESTING_PLAN.md)
 
 See [`docs/MODULES.md`](docs/MODULES.md) for the full module-by-module list of what's left to build toward the target architecture in [`enterprise-text-to-sql-architecture.md`](enterprise-text-to-sql-architecture.md).
