@@ -25,7 +25,7 @@ from datetime import datetime
 from typing import Optional
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import ARRAY, BigInteger, CheckConstraint, ForeignKey, Text, UniqueConstraint, text
+from sqlalchemy import ARRAY, BigInteger, CheckConstraint, ForeignKey, Numeric, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -239,6 +239,62 @@ class MetaBusinessRule(Base):
         return f"<MetaBusinessRule {self.rule_name}>"
 
 
+class MetaQueryLog(Base):
+    """meta.query_log — one row per POST /api/v1/query call (METADATA/20)."""
+
+    __tablename__ = "query_log"
+    __table_args__ = {"schema": "meta"}
+
+    query_id: Mapped[int] = mapped_column(primary_key=True)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    generated_sql: Mapped[Optional[str]] = mapped_column(Text)
+    is_valid: Mapped[Optional[bool]] = mapped_column()
+    errors: Mapped[Optional[list]] = mapped_column(JSONB)
+    warnings: Mapped[Optional[list]] = mapped_column(JSONB)
+    tables_used: Mapped[Optional[list[str]]] = mapped_column(ARRAY(Text))
+    llm_confidence: Mapped[Optional[str]] = mapped_column(Text)
+    retrieval_confidence: Mapped[Optional[float]] = mapped_column(Numeric)
+    retrieval_label: Mapped[Optional[str]] = mapped_column(Text)
+    estimated_cost: Mapped[Optional[float]] = mapped_column(Numeric)
+    estimated_rows: Mapped[Optional[int]] = mapped_column(BigInteger)
+    retried_for_validation: Mapped[Optional[bool]] = mapped_column()
+    prompt_version: Mapped[Optional[int]] = mapped_column()
+    latency_ms: Mapped[Optional[int]] = mapped_column()
+    created_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=text("now()")
+    )
+
+    feedback: Mapped[list["MetaQueryFeedback"]] = relationship(back_populates="query")
+
+    def __repr__(self) -> str:
+        return f"<MetaQueryLog {self.query_id} valid={self.is_valid}>"
+
+
+class MetaQueryFeedback(Base):
+    """meta.query_feedback — user verdicts against a logged query, optionally
+    promoted into meta.query_patterns (METADATA/20)."""
+
+    __tablename__ = "query_feedback"
+    __table_args__ = {"schema": "meta"}
+
+    feedback_id: Mapped[int] = mapped_column(primary_key=True)
+    query_id: Mapped[Optional[int]] = mapped_column(ForeignKey("meta.query_log.query_id"))
+    is_correct: Mapped[bool] = mapped_column(nullable=False)
+    corrected_sql: Mapped[Optional[str]] = mapped_column(Text)
+    comment: Mapped[Optional[str]] = mapped_column(Text)
+    promoted_to_pattern_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("meta.query_patterns.pattern_id")
+    )
+    created_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=text("now()")
+    )
+
+    query: Mapped[Optional["MetaQueryLog"]] = relationship(back_populates="feedback")
+
+    def __repr__(self) -> str:
+        return f"<MetaQueryFeedback {self.feedback_id} is_correct={self.is_correct}>"
+
+
 def main():
     """Smoke-test every model against the live database."""
 
@@ -259,6 +315,8 @@ def main():
             "Change log entries": session.query(MetaChangeLog).count(),
             "Prompt versions": session.query(MetaPromptVersion).count(),
             "Business rules": session.query(MetaBusinessRule).count(),
+            "Query log entries": session.query(MetaQueryLog).count(),
+            "Query feedback entries": session.query(MetaQueryFeedback).count(),
         }
 
         print("ORM models loaded successfully.")

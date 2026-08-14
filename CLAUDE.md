@@ -14,9 +14,9 @@ A banking-domain Text-to-SQL system being built incrementally toward the target 
    few-shot query-pattern bank, and pgvector embeddings over all of it.
 
 **Always check [`docs/MODULES.md`](docs/MODULES.md) before touching `app/` or `workers/`** — it is the
-authoritative, up-to-date status table (✅/🟡/⬜) of every module against the architecture doc. Most files
-under `app/` are still docstring-only stubs; only a subset is real. Don't assume a file has logic just
-because it exists.
+authoritative, up-to-date status table (✅/🟡/⬜) of every module against the architecture doc. A few items
+are deliberately deferred (auth, Redis, Docker/K8s, Grafana — see `docs/MODULES.md`'s API & app section);
+don't assume something is unbuilt just because the architecture doc mentions it.
 
 ## Current implementation status (see docs/MODULES.md for details)
 
@@ -28,17 +28,18 @@ because it exists.
   `relationship_graph.py`, `confidence.py` (the full retrieval pipeline — see below)
 - `app/prompting/prompt_builder.py` + `app/prompting/templates/user_prompt.txt` (see below)
 - `app/llm/client.py` (Gemini via `google-genai`) + `app/llm/schemas.py` (see below)
-- `app/config.py` (partial — `GEMINI_API_KEY`/`GEMINI_MODEL` only so far)
+- `app/config.py` (`GEMINI_API_KEY`/`GEMINI_MODEL` plus `API_HOST`/`API_PORT`/`API_BASE_URL`,
+  `EXECUTE_ENABLED`/`EXECUTE_ROW_CAP`/`EXECUTE_STATEMENT_TIMEOUT_MS`, `LOG_LEVEL`)
 - `app/validation/sql_parser.py`, `guardrails.py`, `cost_estimator.py` + `app/pipeline.py` (see below)
 - `workers/reindex_embeddings.py`, `workers/generate_docs.py`, `workers/drift_detector.py`,
   `workers/sync_data_content.py`, `workers/scheduler.py`
+- `app/main.py` (FastAPI entrypoint), `app/api/routes_query.py`, `routes_feedback.py`, `routes_admin.py`,
+  `deps.py`, `schemas.py`, `metrics.py`, `ui/streamlit_app.py` (see "API layer" below)
+- `tests/` — `test_validation.py`, `test_db.py`, `test_retrieval.py`, `test_prompting.py` (fast, no LLM),
+  `test_llm.py`, `test_pipeline.py`, `test_api.py`, `test_e2e.py` (`live`-marked, real Gemini calls)
 
-**Stubs (docstring only, no logic yet)** — implementing one of these means writing the first real code
-for that piece, guided by the architecture doc section referenced in its docstring:
-- `app/main.py`, `app/api/routes_*.py`
-
-When picking up a stub, read its docstring first (it cites the exact architecture-doc section) and read
-that section before writing code.
+Nothing is currently a docstring-only stub. `docs/MODULES.md` is still the authoritative status table if
+that changes — check it before assuming a file has real logic.
 
 ## Running things
 
@@ -65,10 +66,27 @@ python -m app.validation.guardrails
 python -m app.validation.cost_estimator
 python -m app.pipeline  # full end-to-end pipeline demo (retrieval -> prompt -> LLM -> validate)
 python test_connection.py     # standalone DB connectivity smoke test, run directly (not -m)
+
+uvicorn app.main:app --reload           # FastAPI service (http://127.0.0.1:8000, Swagger UI at /docs)
+streamlit run ui/streamlit_app.py       # Streamlit UI (needs the API running; http://localhost:8501)
+
+pytest                                  # full suite — see "Live-test cost" below before running
+pytest -m "not live"                    # fast subset (55 tests), no Gemini calls — safe to run anytime
+pytest -m live                          # live subset (13 tests), real billable Gemini calls
 ```
 
-There is no test suite yet (`tests/` is an empty package) and no lint/format config in the repo.
-`pip install -r requirements.txt` installs pinned dependencies.
+`pip install -r requirements.txt` installs pinned dependencies. No lint/format config in the repo.
+
+### Live-test cost
+
+A free-tier Gemini API key is capped at **20 `generate_content` calls per day per model** — not a
+per-minute limit (the SDK's own `RetryInfo` hint, e.g. "retry in 9s", is misleading here; the actual
+blocking quota is `GenerateRequestsPerDayPerProjectPerModel-FreeTier` and doesn't reset for hours). A
+single `pytest -m live` run costs roughly a dozen calls, and manual UI/curl smoke testing draws from the
+same budget. If `pytest -m live` starts failing with `429 RESOURCE_EXHAUSTED`, that's quota exhaustion, not
+a bug — don't retry-loop against it; wait for the daily reset or use a paid-tier key. Distinguish this from
+a transient `503 UNAVAILABLE` ("model experiencing high demand"), which genuinely is worth a short retry —
+`tests/conftest.py`'s `retry_on_api_error`/`retry_on_5xx` helpers handle that case.
 
 ### Environment
 
@@ -77,7 +95,10 @@ Requires a local `.env` (gitignored) with `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_U
 (defaults to `gemini-flash-latest` — a model-family alias, not a pinned version string; a pinned string
 like `gemini-2.5-flash` went stale mid-project when Google moved new API keys to newer model generations,
 so prefer the `-latest` alias over pinning unless a specific model's behavior is required) — a PostgreSQL
-instance with the **pgvector** extension enabled. Embeddings are generated locally via
+instance with the **pgvector** extension enabled. Also: `API_HOST`/`API_PORT`/`API_BASE_URL` (working
+defaults, `127.0.0.1:8000`), `EXECUTE_ENABLED` (default **false** — gates `app/pipeline.py`'s
+`execute_query()`, the only code path that runs LLM-generated SQL against the real database),
+`EXECUTE_ROW_CAP`/`EXECUTE_STATEMENT_TIMEOUT_MS`, `LOG_LEVEL`. Embeddings are generated locally via
 `sentence-transformers/all-MiniLM-L6-v2` (384-dim vectors), which pulls in `torch`/`transformers` and needs
 internet access on first run to pull the model from Hugging Face; the LLM client needs internet access for
 every call (it's a live API, no local fallback).
@@ -89,7 +110,9 @@ Key packages: `psycopg2`, `python-dotenv`, `sqlalchemy` (2.0), `pgvector` (Pytho
 `pydantic` (backs `app/llm/schemas.py`), `sqlglot` (chosen over `pglast` for `app/validation/sql_parser.py`
 — `pglast` needs native compilation against the PG C parser; `sqlglot` is pure Python, avoiding a repeat of
 pgvector's Windows build pain). pgvector on Windows needs PG **17.3+** (17.0–17.2 has a Windows linker bug
-that breaks building the extension from source).
+that breaks building the extension from source). `fastapi` + `uvicorn` (the HTTP API), `streamlit` +
+`requests` (the UI — calls the API over HTTP, doesn't import `app.pipeline`), `prometheus-client` (`/metrics`),
+`pytest` + `httpx` (`httpx` is required by FastAPI's `TestClient`, not called directly).
 
 ## Architecture — how the pieces fit together
 
@@ -258,16 +281,57 @@ compilation, and this repo already has a documented, painful Windows build histo
   all validation entirely) is rejected by Postgres itself
   (`ReadOnlySqlTransaction cannot execute UPDATE in a read-only transaction`).
 
+**API layer** (architecture doc §6.3, §6.4) — `app/main.py` exposes `app/pipeline.py` over HTTP:
+1. **The single most important design point**: `app/main.py`'s `lifespan` context manager loads the
+   embedding model and cross-encoder reranker **once at startup**, storing them on `app.state`. Each takes
+   several seconds to load; loading per-request would make every API call unusably slow.
+   `generate_validated_sql()` already accepts these as parameters precisely so they can be injected this
+   way. Every route reuses the shared instances via `request.app.state.embedding_model`/`.reranker_model`
+   (`app/api/deps.py`'s `get_db()` only handles the DB connection — models aren't a FastAPI dependency,
+   to avoid a circular import between `app.api` and `app.main`).
+2. A blanket `@app.exception_handler(Exception)` converts any unhandled exception (including a live
+   `google.genai.errors.ServerError`) into a clean HTTP 500 JSON response rather than leaking a traceback.
+   This matters for testing: it means `tests/conftest.py`'s FastAPI `TestClient`-based tests can't catch a
+   `ServerError` as a raised exception — they have to check `response.status_code` instead (`retry_on_5xx`
+   vs. `retry_on_api_error`, which is for direct, non-HTTP `call_llm()`/`generate_validated_sql()` calls).
+3. `POST /api/v1/query` (`app/api/routes_query.py`) runs `generate_validated_sql()`, writes a
+   `meta.query_log` row (`METADATA/20_add_query_log_and_feedback.sql`), and returns the row's `query_id` —
+   the contract `POST /api/v1/feedback` depends on. `POST /api/v1/execute` **always re-validates** SQL via
+   `validate_sql()` before calling `execute_query()`, even when the SQL comes from a previously-returned
+   `query_id` — never trusting a client-supplied string just because an earlier response contained it.
+   Both are gated by `EXECUTE_ENABLED` (default **false**); `/execute` returns HTTP 403 when it's off.
+4. `POST /api/v1/feedback` (`routes_feedback.py`) inserts into `meta.query_feedback`; promoting the query
+   into `meta.query_patterns` (the few-shot bank) requires an explicit `promote: true` in the request —
+   never an automatic side effect of `is_correct: true`, since silently mutating the bank that drives
+   future retrieval quality shouldn't happen without the caller asking for it.
+5. `GET /api/v1/health` (`routes_admin.py`) checks DB reachability, models-loaded, and `GEMINI_API_KEY`
+   presence — deliberately **never** makes a live Gemini call, since health checks get polled and polling
+   shouldn't bill an external API. `GET /metrics` is Prometheus exposition (`app/api/metrics.py`'s
+   counters/histogram) at the bare path, **not** under `/api/v1/`, per §6.4.
+6. `ui/streamlit_app.py` calls the FastAPI service **over HTTP** (`API_BASE_URL`), never importing
+   `app.pipeline` directly — §6.2 models Streamlit as a client of the API, and importing the pipeline would
+   duplicate the model-loading problem inside a second process.
+
+Manually verified end to end: all 7 endpoints via curl/Swagger, the Streamlit UI driven in a real browser
+session (question → spinner → SQL/validation/confidence display → feedback), and a transient live-Gemini
+`503` mid-session confirmed to surface cleanly in the UI without corrupting state (no `query_log` row is
+written when the pipeline call raises, since that happens before the route's logging step).
+
 **End-to-end pipeline status**: question → `retrieve_context()` → `build_prompt()` → `call_llm()` →
-`validate_sql()` (+ one repair retry) is fully wired and live-verified via `app/pipeline.py`. Execution is
-wired but deliberately opt-in (`execute_query()`, never automatic). What's left per `docs/MODULES.md`: the
-API layer (`app/main.py`, `app/api/routes_*.py`) to expose this over HTTP.
+`validate_sql()` (+ one repair retry) → HTTP API → Streamlit UI is fully wired. Execution is wired but
+deliberately opt-in (`execute_query()`/`EXECUTE_ENABLED`, never automatic). A first pytest suite exists
+(`tests/`, see "Running things" and "Live-test cost" above) — 55 non-live tests are green; the 13 `live`
+tests are written and one live path (a direct `/api/v1/query` call) was manually verified working, but a
+full `pytest -m live` run hasn't completed clean in one sitting yet because of the free-tier daily quota —
+re-run it once quota resets. What's left, all deliberately deferred per `docs/MODULES.md`: OAuth2/OIDC
+auth + role-based schema visibility, Redis caching, Docker/Kubernetes, Grafana dashboards.
 
 ## Working conventions in this repo
 
 - Follow the existing code style: heavy docstrings explaining *why* and pointing at the relevant
   architecture-doc section, generous blank lines between logical blocks, `print()`-based progress logging
-  in scripts (no logging framework yet).
+  in one-shot scripts (`workers/`, the `python -m app.*` demos). `app/main.py` and the routes use stdlib
+  `logging` instead, matching `workers/scheduler.py`'s precedent for long-running/request-serving code.
 - Ask before adding new dependencies or diverging from the existing code/architecture pattern, even when
   you're confident in the alternative — this project follows the architecture doc closely and departures
   should be a deliberate, discussed choice.

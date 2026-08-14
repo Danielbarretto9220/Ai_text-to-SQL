@@ -86,7 +86,7 @@ def validate_sql(connection, sql_text, question_text):
 
 
 def _result(question_text, retrieval_result, retried, sql=None, valid=False, errors=None, warnings=None,
-            tables_used=None, confidence=None, cost=None):
+            tables_used=None, confidence=None, cost=None, prompt_version=None):
     return {
         "question": question_text,
         "sql": sql,
@@ -98,6 +98,7 @@ def _result(question_text, retrieval_result, retried, sql=None, valid=False, err
         "retrieval": retrieval_result,
         "cost": cost,
         "retried_for_validation": retried,
+        "prompt_version": prompt_version,
     }
 
 
@@ -112,6 +113,7 @@ def generate_validated_sql(connection, question_text, embedding_model=None, rera
 
     prompt_result = build_prompt(connection, question_text, embedding_model, reranker_model)
     retrieval_result = prompt_result["retrieval"]
+    prompt_version = prompt_result["prompt_version"]["version_number"]
 
     llm_result = call_llm(prompt_result)
     response = llm_result["response"]
@@ -120,12 +122,14 @@ def generate_validated_sql(connection, question_text, embedding_model=None, rera
         return _result(
             question_text, retrieval_result, False,
             errors=[f"LLM failed to produce a parseable response: {llm_result['raw_text']}"],
+            prompt_version=prompt_version,
         )
 
     if is_error_response(response):
         return _result(
             question_text, retrieval_result, False,
             errors=[f"Insufficient context: {response.missing}"], confidence=response.confidence,
+            prompt_version=prompt_version,
         )
 
     validation = validate_sql(connection, response.sql, question_text)
@@ -150,13 +154,14 @@ def generate_validated_sql(connection, question_text, embedding_model=None, rera
             return _result(
                 question_text, retrieval_result, True,
                 errors=[f"Repair attempt failed to produce a parseable response: {llm_result['raw_text']}"],
+                prompt_version=prompt_version,
             )
 
         if is_error_response(response):
             return _result(
                 question_text, retrieval_result, True,
                 errors=[f"Insufficient context (after repair attempt): {response.missing}"],
-                confidence=response.confidence,
+                confidence=response.confidence, prompt_version=prompt_version,
             )
 
         validation = validate_sql(connection, response.sql, question_text)
@@ -165,7 +170,7 @@ def generate_validated_sql(connection, question_text, embedding_model=None, rera
         question_text, retrieval_result, retried,
         sql=response.sql, valid=validation["valid"], errors=validation["errors"],
         warnings=validation["warnings"], tables_used=response.tables_used,
-        confidence=response.confidence, cost=validation.get("cost"),
+        confidence=response.confidence, cost=validation.get("cost"), prompt_version=prompt_version,
     )
 
 
