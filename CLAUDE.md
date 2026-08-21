@@ -265,10 +265,10 @@ reuses the `openai` SDK pattern rather than introducing a new one:
    scoped to `call_llm()` internally (JSON *shape* failures) — `app/pipeline.py`'s own, separate repair
    retry (SQL *content* failures, e.g. hallucinated columns) always calls `call_llm()` fresh, so it does
    **not** inherit this escalation; a content-level repair still runs on `GROQ_MODEL` unless it also hits a
-   shape failure. Live-verified: 6 of 7 `pytest -m live` pipeline tests pass end to end against real Groq;
-   the one failure was `openai/gpt-oss-20b` generating SQL that referenced a nonexistent column alias — a
-   genuine SQL-quality gap of the smaller free model, not a plumbing bug, and a realistic tradeoff of this
-   provider vs. a paid frontier model.
+   shape failure. Live-verified: 7 of 7 `pytest -m live` pipeline tests pass end to end against real Groq
+   (initially 6/7 — the one failure turned out to be a `check_hallucinations()` bug rejecting a valid
+   SELECT-list-alias reference in `ORDER BY`, not a model-quality issue; see the SQL validation section
+   below for the fix).
 
 `app/llm/client.py` does **not** do SQL validation, guardrails, cost estimation, or full pipeline
 orchestration — those live in `app/validation/*` and `app/pipeline.py`, described next.
@@ -281,7 +281,15 @@ compilation, and this repo already has a documented, painful Windows build histo
    `exp.Select` — defense in depth, never trusts the LLM followed the system prompt's own read-only
    instruction), `check_hallucinations()` (resolves aliased/unqualified column refs against
    `meta.tables`/`meta.columns`), `check_joins()` (every JOIN...ON validated against
-   `app/retrieval/relationship_graph.build_graph()`, reused not requeried).
+   `app/retrieval/relationship_graph.build_graph()`, reused not requeried). **Bug found and fixed
+   post-Groq-migration**: `check_hallucinations()` had no concept of SELECT-list aliases, so a query
+   like `SELECT ..., COUNT(x) AS employee_count FROM ... ORDER BY employee_count` was rejected as
+   `Unknown column: employee_count` — valid Postgres (`ORDER BY` resolves aliases against the output
+   list, not the underlying tables), reported false-positive. Fixed by collecting every `Select` node's
+   projection aliases and exempting unqualified column refs that match one. This also explains the
+   "Which branch has the most loans?" live-test failure noted below under "LLM client" — it was
+   misdiagnosed at the time as a `gpt-oss-20b` SQL-quality gap; it was actually this bug, and the query
+   now passes.
 2. `app/validation/guardrails.py` — `enforce_limit()` (injects `LIMIT 100` unless the query is a pure
    aggregate, matching system prompt rule 4), `check_complexity()` (join/subquery count caps),
    `check_business_rules()` (dispatches each active `meta.business_rules` row to a per-`rule_type` checker —
@@ -347,24 +355,27 @@ compilation, and this repo already has a documented, painful Windows build histo
    `app.pipeline` directly — §6.2 models Streamlit as a client of the API, and importing the pipeline would
    duplicate the model-loading problem inside a second process.
 
-Manually verified end to end **under the Gemini integration** (before the 2026-08-14 xAI Grok switch, and
-the 2026-08-21 Anthropic Claude and Groq switches, both same day): all 7 endpoints via curl/Swagger, the
-Streamlit UI driven in a real browser session (question → spinner → SQL/validation/confidence display →
-feedback), and a transient LLM `503` mid-session confirmed to surface cleanly in the UI without corrupting
-state (no `query_log` row is written when the pipeline call raises, since that happens before the route's
-logging step) — that state-safety mechanism doesn't depend on which provider raised the error, so it still
-applies under Groq, but hasn't been independently re-verified through the UI itself yet.
+Manually verified end to end **under Groq**: `uvicorn`+Streamlit started locally, `GET /api/v1/health`
+confirmed `groq_api_key_configured: true`, `POST /api/v1/query` hit directly via curl returned valid
+correctly-joined SQL with high confidence, and the Streamlit UI was driven in a real browser session
+(question → spinner → SQL/validation/confidence display, including the same "Which branch has the most
+loans?" question that had failed live-testing the day before — this time it round-tripped clean, since the
+`check_hallucinations()` alias bug above was already fixed by then). Demo `meta.query_log` rows created
+during this manual pass were cleaned up afterward, matching the test suite's own convention. Still
+outstanding from the original Gemini-era verification: a transient-LLM-error mid-UI-session check (the
+state-safety mechanism — no `query_log` row written when the pipeline call raises — doesn't depend on
+provider, but hasn't been re-triggered and re-confirmed under Groq specifically).
 
 **End-to-end pipeline status**: question → `retrieve_context()` → `build_prompt()` → `call_llm()` →
-`validate_sql()` (+ one repair retry) → HTTP API → Streamlit UI is fully wired, with `app/llm/client.py`
-now targeting Groq (`openai/gpt-oss-20b`, escalating to `openai/gpt-oss-120b` on repair — see "LLM client"
-above) after Anthropic Claude turned out to require paid billing (not covered by a Claude.ai consumer
-subscription) the same day it was implemented. **Live-verified in this session** via `pytest -m live`: both
-`test_llm.py` tests pass (normal SQL generation and the `insufficient_context` escape hatch both round-trip
-correctly through real Groq calls), and 6 of 7 `test_pipeline.py` tests pass — the one failure is a
-genuine SQL-quality miss by `openai/gpt-oss-20b` (a nonexistent column alias), not a plumbing bug; see the
-"LLM client" section above. The `test_api.py`/`test_e2e.py` live tests (HTTP layer) and the Streamlit UI
-haven't been separately re-run against Groq yet. Execution is wired but deliberately opt-in
+`validate_sql()` (+ one repair retry) → HTTP API → Streamlit UI is fully wired and live-verified under
+Groq, both via `pytest -m live` and by manually running the API + UI and driving a real browser session
+(see above). `app/llm/client.py` targets Groq (`openai/gpt-oss-20b`, escalating to `openai/gpt-oss-120b`
+on repair — see "LLM client" above) after Anthropic Claude turned out to require paid billing (not covered
+by a Claude.ai consumer subscription) the same day it was implemented. `pytest -m live`: `test_llm.py`'s 2
+tests and `test_pipeline.py`'s 7 tests all pass (initially 6/7 — the one failure was the
+`check_hallucinations()` alias bug fixed above, not a model-quality issue). `test_api.py`/`test_e2e.py`'s
+live HTTP-layer tests haven't been separately re-run against Groq yet — the equivalent path (a real
+`/api/v1/query` POST) was exercised manually instead. Execution is wired but deliberately opt-in
 (`execute_query()`/`EXECUTE_ENABLED`, never automatic). What's left, all deliberately deferred per
 `docs/MODULES.md`: OAuth2/OIDC auth + role-based schema visibility, Redis caching, Docker/Kubernetes,
 Grafana dashboards.
