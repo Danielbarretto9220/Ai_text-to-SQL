@@ -11,8 +11,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+# Tiered model selection (app/llm/client.py): GROQ_MODEL handles the first
+# attempt on every call — smaller/faster, sufficient for the large majority
+# of well-scoped text-to-SQL questions. GROQ_ESCALATION_MODEL is only
+# reached by call_llm()'s one automatic repair retry, when the first
+# model's response failed validation.
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+GROQ_ESCALATION_MODEL = os.getenv("GROQ_ESCALATION_MODEL", "openai/gpt-oss-120b")
 
 
 def _env_bool(name, default):

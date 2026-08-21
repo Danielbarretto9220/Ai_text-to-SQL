@@ -1,6 +1,6 @@
 """
 Full user journey: POST /api/v1/query -> POST /api/v1/execute ->
-POST /api/v1/feedback with promotion. One live Gemini call.
+POST /api/v1/feedback with promotion. One live Groq call.
 
 EXECUTE_ENABLED defaults to false (app/config.py), so the /execute step
 is monkeypatched on for this test only — patching

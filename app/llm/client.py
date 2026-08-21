@@ -1,54 +1,88 @@
 """
-LLM client (Google AI Studio / Gemini, via the google-genai SDK).
+LLM client (Groq, via the `openai` SDK — Groq documents its API as an
+OpenAI-compatible drop-in).
 
-Takes app/prompting/prompt_builder.py's build_prompt() output directly
-(system_prompt, user_prompt) and returns a validated
-SQLGenerationResponse. Does NOT do SQL validation, guardrails, cost
-estimation, or pipeline orchestration — those are separate, later
-phases (app/validation/*, and an unbuilt orchestration layer).
+Takes app/prompting/prompt_builder.py's build_prompt() output dict directly
+(system_prompt, user_prompt) and returns a validated SQLGenerationResponse.
+Does NOT do SQL validation, guardrails, cost estimation, or pipeline
+orchestration — those are separate, later phases (app/validation/*, and
+app/pipeline.py).
 
-See enterprise-text-to-sql-architecture.md §6.5, §8, §3.4.
+This module has targeted Gemini, xAI Grok, and Anthropic Claude in turn;
+it was rewritten for Groq on 2026-08-21 — the prior providers all require
+paid billing before any call succeeds, and Groq is the one with a genuinely
+free (no-card) tier, at the cost of tighter rate limits.
+
+Model selection is tiered rather than fixed: GROQ_MODEL (openai/gpt-oss-20b
+by default, app/config.py) handles every first attempt — smaller and
+faster, and sufficient for the large majority of well-scoped text-to-SQL
+questions. call_llm()'s one automatic repair retry (architecture doc §3.4)
+escalates to GROQ_ESCALATION_MODEL (openai/gpt-oss-120b by default) instead
+of re-asking the smaller model with the same error appended — a
+shape/validation failure on the first model is exactly the "needs a more
+capable model, not another attempt at the same one" case.
+
+**response_format is JSON Object mode, not JSON Schema strict mode —
+deliberately, not as an oversight.** Groq documents `response_format:
+{"type": "json_schema", "json_schema": {"strict": true, ...}}` as supported
+on both openai/gpt-oss-20b and openai/gpt-oss-120b, and it was tried first
+here. It does not work for this project's schema: SQLGenerationResponse's
+optional fields serialize (via Pydantic's model_json_schema()) as
+`anyOf: [{type: ...}, {type: "null"}]`, and Groq's strict-mode validator
+rejects a model-generated `null` for those fields with `does not validate
+with /properties/<field>/type: expected string, but got null` — even
+though the generation was correct per the schema. Confirmed live against
+both models with the actual schema before writing this module; this is a
+Groq-side validator limitation with anyOf/nullable fields, not a prompt or
+schema-authoring mistake. JSON Object mode (used here) only constrains the
+output to *be* a JSON object, not to match SQLGenerationResponse's exact
+shape — weaker than the schema guarantee this project used with Anthropic
+Claude — so the OUTPUT FORMAT block in app/prompting/templates/user_prompt.txt
+carries the actual shape instruction, and parse_response() + call_llm()'s
+repair retry are what actually catch a mismatch. Revisit json_schema strict
+mode if Groq fixes the anyOf/null validation — it would be a real
+improvement, not just a preference.
 """
 
 import json
 
-from google import genai
-from google.genai import types
+from openai import OpenAI
 from pydantic import ValidationError
 
-from app.config import GEMINI_API_KEY, GEMINI_MODEL
+from app.config import GROQ_API_KEY, GROQ_ESCALATION_MODEL, GROQ_MODEL
 from app.llm.schemas import SQLGenerationResponse
+
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
 
 def get_client():
-    """Create a genai.Client using the configured API key. Raises clearly
-    if GEMINI_API_KEY is unset — fails at point of use, not at import
-    time, so importing this module never breaks callers that don't
-    need it."""
+    """Create an OpenAI-SDK client pointed at Groq's endpoint. Raises
+    clearly if GROQ_API_KEY is unset — fails at point of use, not at
+    import time, so importing this module never breaks callers that
+    don't need it."""
 
-    if not GEMINI_API_KEY:
-        raise ValueError("GEMINI_API_KEY is not set — add it to .env.")
+    if not GROQ_API_KEY:
+        raise ValueError("GROQ_API_KEY is not set — add it to .env.")
 
-    return genai.Client(api_key=GEMINI_API_KEY)
+    return OpenAI(api_key=GROQ_API_KEY, base_url=GROQ_BASE_URL)
 
 
 def generate_sql(client, system_prompt, user_prompt, model=None):
-    """One Gemini call: temperature 0 (architecture doc §3.4 —
-    determinism), strict JSON output constrained to SQLGenerationResponse
-    via response_schema. Returns the raw response text."""
+    """One Groq call: JSON Object mode (response_format={"type":
+    "json_object"}) — see this module's docstring for why JSON Schema
+    strict mode isn't used despite being documented as supported. Returns
+    the raw response text."""
 
-    response = client.models.generate_content(
-        model=model or GEMINI_MODEL,
-        contents=user_prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=system_prompt,
-            temperature=0,
-            response_mime_type="application/json",
-            response_schema=SQLGenerationResponse,
-        ),
+    response = client.chat.completions.create(
+        model=model or GROQ_MODEL,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
     )
 
-    return response.text
+    return response.choices[0].message.content
 
 
 def parse_response(raw_text):
@@ -67,7 +101,10 @@ def call_llm(prompt_result, client=None, model=None):
     """The entry point: takes prompt_builder.build_prompt()'s output dict
     directly. One automatic repair retry on parse/validation failure
     (architecture doc §3.4), appending the error to the user prompt and
-    asking for corrected JSON.
+    escalating from GROQ_MODEL to GROQ_ESCALATION_MODEL — unless the caller
+    passed an explicit `model`, in which case both attempts use it (no
+    escalation), matching the single-model behavior the test suite relies
+    on.
 
     Returns {"response": SQLGenerationResponse | None, "raw_text": str,
     "retried": bool}. Does not interpret is_error_response() itself —
@@ -92,7 +129,7 @@ def call_llm(prompt_result, client=None, model=None):
         "Return corrected JSON matching the schema."
     )
 
-    raw_text = generate_sql(client, system_prompt, repair_prompt, model=model)
+    raw_text = generate_sql(client, system_prompt, repair_prompt, model=model or GROQ_ESCALATION_MODEL)
     response, error = parse_response(raw_text)
 
     return {"response": response, "raw_text": raw_text, "retried": True}
@@ -126,7 +163,7 @@ def main():
 
         print(f"System prompt version: {prompt_result['prompt_version']}")
 
-        print("\nCalling Gemini...")
+        print("\nCalling Groq...")
         result = call_llm(prompt_result)
 
         print("\n" + "=" * 70)

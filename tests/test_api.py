@@ -1,7 +1,7 @@
 """
 FastAPI routes via TestClient — one live call backs the module-scoped
 logged_query fixture (POST /api/v1/query); everything else exercises the
-API surface without touching Gemini.
+API surface without touching Groq.
 
 Writes go through app/api/routes_query.py and routes_feedback.py, which
 commit internally (see conftest.py's module docstring for why that means

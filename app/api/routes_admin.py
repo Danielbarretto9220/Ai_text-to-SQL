@@ -11,7 +11,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app.api.deps import get_db
 from app.api.schemas import HealthResponse, ReindexResponse, SchemaSearchResponse, SchemaSearchResult
-from app.config import GEMINI_API_KEY
+from app.config import GROQ_API_KEY
 from app.retrieval.hybrid_search import hybrid_search
 from workers.reindex_embeddings import incremental_reindex
 
@@ -21,8 +21,8 @@ router = APIRouter()
 @router.get("/api/v1/health", response_model=HealthResponse)
 def health(request: Request, connection=Depends(get_db)):
     """DB reachable, models loaded, API key configured. Never makes a
-    live Gemini call — health checks get polled, and polling should
-    never bill an external API."""
+    live Groq call — health checks get polled, and polling shouldn't
+    burn the free tier's rate-limited quota on every poll."""
 
     database_ok = False
     try:
@@ -41,7 +41,7 @@ def health(request: Request, connection=Depends(get_db)):
         status="ok" if (database_ok and models_loaded) else "degraded",
         database=database_ok,
         models_loaded=models_loaded,
-        gemini_api_key_configured=bool(GEMINI_API_KEY),
+        groq_api_key_configured=bool(GROQ_API_KEY),
     )
 
 

@@ -1,5 +1,5 @@
 """
-app/llm/client.py — live Gemini calls. Marked `live`; run the rest of the
+app/llm/client.py — live Groq calls. Marked `live`; run the rest of the
 suite with `-m "not live"` while iterating (see pytest.ini).
 """
 

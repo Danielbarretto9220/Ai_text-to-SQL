@@ -4,7 +4,7 @@ execute_query()'s defense-in-depth (rejected by Postgres itself via
 SET TRANSACTION READ ONLY, not just app-level guardrails).
 
 pipeline_result is module-scoped and parameterized by question so each
-of the 3 canonical questions costs exactly one live Gemini call shared
+of the 3 canonical questions costs exactly one live Groq call shared
 across every assertion about it, per docs/API_AND_TESTING_PLAN.md B2.
 """
 

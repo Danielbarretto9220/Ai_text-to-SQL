@@ -27,16 +27,18 @@ don't assume something is unbuilt just because the architecture doc mentions it.
 - `app/retrieval/` — `document_builder.py`, `vector_search.py`, `hybrid_search.py`, `rerank.py`,
   `relationship_graph.py`, `confidence.py` (the full retrieval pipeline — see below)
 - `app/prompting/prompt_builder.py` + `app/prompting/templates/user_prompt.txt` (see below)
-- `app/llm/client.py` (Gemini via `google-genai`) + `app/llm/schemas.py` (see below)
-- `app/config.py` (`GEMINI_API_KEY`/`GEMINI_MODEL` plus `API_HOST`/`API_PORT`/`API_BASE_URL`,
-  `EXECUTE_ENABLED`/`EXECUTE_ROW_CAP`/`EXECUTE_STATEMENT_TIMEOUT_MS`, `LOG_LEVEL`)
+- `app/llm/client.py` (Groq, via the `openai` SDK pointed at Groq's OpenAI-compatible endpoint) +
+  `app/llm/schemas.py` (see below)
+- `app/config.py` (`GROQ_API_KEY`/`GROQ_MODEL`/`GROQ_ESCALATION_MODEL` plus
+  `API_HOST`/`API_PORT`/`API_BASE_URL`, `EXECUTE_ENABLED`/`EXECUTE_ROW_CAP`/`EXECUTE_STATEMENT_TIMEOUT_MS`,
+  `LOG_LEVEL`)
 - `app/validation/sql_parser.py`, `guardrails.py`, `cost_estimator.py` + `app/pipeline.py` (see below)
 - `workers/reindex_embeddings.py`, `workers/generate_docs.py`, `workers/drift_detector.py`,
   `workers/sync_data_content.py`, `workers/scheduler.py`
 - `app/main.py` (FastAPI entrypoint), `app/api/routes_query.py`, `routes_feedback.py`, `routes_admin.py`,
   `deps.py`, `schemas.py`, `metrics.py`, `ui/streamlit_app.py` (see "API layer" below)
 - `tests/` — `test_validation.py`, `test_db.py`, `test_retrieval.py`, `test_prompting.py` (fast, no LLM),
-  `test_llm.py`, `test_pipeline.py`, `test_api.py`, `test_e2e.py` (`live`-marked, real Gemini calls)
+  `test_llm.py`, `test_pipeline.py`, `test_api.py`, `test_e2e.py` (`live`-marked, real Groq calls)
 
 Nothing is currently a docstring-only stub. `docs/MODULES.md` is still the authoritative status table if
 that changes — check it before assuming a file has real logic.
@@ -60,7 +62,7 @@ python -m app.retrieval.rerank
 python -m app.retrieval.relationship_graph
 python -m app.retrieval.confidence  # full retrieval pipeline demo
 python -m app.prompting.prompt_builder  # full prompting pipeline demo
-python -m app.llm.client  # full pipeline demo incl. a real Gemini call
+python -m app.llm.client  # full pipeline demo incl. a real Groq call
 python -m app.validation.sql_parser
 python -m app.validation.guardrails
 python -m app.validation.cost_estimator
@@ -71,48 +73,60 @@ uvicorn app.main:app --reload           # FastAPI service (http://127.0.0.1:8000
 streamlit run ui/streamlit_app.py       # Streamlit UI (needs the API running; http://localhost:8501)
 
 pytest                                  # full suite — see "Live-test cost" below before running
-pytest -m "not live"                    # fast subset (55 tests), no Gemini calls — safe to run anytime
-pytest -m live                          # live subset (13 tests), real billable Gemini calls
+pytest -m "not live"                    # fast subset (55 tests), no Groq calls — safe to run anytime
+pytest -m live                          # live subset (13 tests), real Groq calls (free tier, rate-limited)
 ```
 
 `pip install -r requirements.txt` installs pinned dependencies. No lint/format config in the repo.
 
-### Live-test cost
+### Live-test rate limits
 
-A free-tier Gemini API key is capped at **20 `generate_content` calls per day per model** — not a
-per-minute limit (the SDK's own `RetryInfo` hint, e.g. "retry in 9s", is misleading here; the actual
-blocking quota is `GenerateRequestsPerDayPerProjectPerModel-FreeTier` and doesn't reset for hours). A
-single `pytest -m live` run costs roughly a dozen calls, and manual UI/curl smoke testing draws from the
-same budget. If `pytest -m live` starts failing with `429 RESOURCE_EXHAUSTED`, that's quota exhaustion, not
-a bug — don't retry-loop against it; wait for the daily reset or use a paid-tier key. Distinguish this from
-a transient `503 UNAVAILABLE` ("model experiencing high demand"), which genuinely is worth a short retry —
-`tests/conftest.py`'s `retry_on_api_error`/`retry_on_5xx` helpers handle that case.
+The project moved from Anthropic Claude to Groq (2026-08-21, same day as the Claude switch) — every prior
+provider (Gemini, xAI Grok, Anthropic Claude) requires a payment method on file before sustained use;
+Groq's free tier is the one that doesn't, at the cost of tighter rate limits than a paid tier gives you.
+`GROQ_API_KEY` needs no billing setup — a bare API key from
+[console.groq.com](https://console.groq.com/keys) works immediately. Check
+https://console.groq.com/docs/rate-limits (or the account's own `/settings/limits` page — the docs page
+notes the two can differ) for current per-model rate limits before assuming anything about quota size —
+don't guess or hardcode a specific number here without having actually hit it, the way the earlier Gemini
+integration's now-removed 20/day free-tier note was based on direct observation. `tests/conftest.py`'s
+`retry_on_api_error`/`retry_on_5xx` helpers retry a transient `openai.InternalServerError` (5xx) but
+deliberately do **not** retry `openai.RateLimitError` (429) — that distinction exists precisely because of
+the Gemini-era lesson that a quota/billing error can *look* transient (a short retry hint) while actually
+requiring a non-retry fix (waiting for the rate-limit window to reset).
+
+Model selection is a deliberate quota lever, not just a capability one: every `call_llm()` attempt starts
+on `GROQ_MODEL` (`openai/gpt-oss-20b` by default) rather than the larger model, and only the one automatic
+repair retry escalates to `GROQ_ESCALATION_MODEL` (`openai/gpt-oss-120b` by default) — see the "LLM
+client" section below.
 
 ### Environment
 
 Requires a local `.env` (gitignored) with `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, plus
-`GEMINI_API_KEY` (from [Google AI Studio](https://aistudio.google.com/)) and optionally `GEMINI_MODEL`
-(defaults to `gemini-flash-latest` — a model-family alias, not a pinned version string; a pinned string
-like `gemini-2.5-flash` went stale mid-project when Google moved new API keys to newer model generations,
-so prefer the `-latest` alias over pinning unless a specific model's behavior is required) — a PostgreSQL
-instance with the **pgvector** extension enabled. Also: `API_HOST`/`API_PORT`/`API_BASE_URL` (working
-defaults, `127.0.0.1:8000`), `EXECUTE_ENABLED` (default **false** — gates `app/pipeline.py`'s
-`execute_query()`, the only code path that runs LLM-generated SQL against the real database),
-`EXECUTE_ROW_CAP`/`EXECUTE_STATEMENT_TIMEOUT_MS`, `LOG_LEVEL`. Embeddings are generated locally via
-`sentence-transformers/all-MiniLM-L6-v2` (384-dim vectors), which pulls in `torch`/`transformers` and needs
-internet access on first run to pull the model from Hugging Face; the LLM client needs internet access for
-every call (it's a live API, no local fallback).
+`GROQ_API_KEY` (from [console.groq.com/keys](https://console.groq.com/keys) — no billing required, see
+"Live-test rate limits" above) and optionally `GROQ_MODEL` (defaults to `openai/gpt-oss-20b`) and
+`GROQ_ESCALATION_MODEL` (defaults to `openai/gpt-oss-120b`, used only for `call_llm()`'s one repair retry)
+— a PostgreSQL instance with the **pgvector** extension enabled. Also: `API_HOST`/`API_PORT`/
+`API_BASE_URL` (working defaults, `127.0.0.1:8000`), `EXECUTE_ENABLED` (default **false** — gates
+`app/pipeline.py`'s `execute_query()`, the only code path that runs LLM-generated SQL against the real
+database), `EXECUTE_ROW_CAP`/`EXECUTE_STATEMENT_TIMEOUT_MS`, `LOG_LEVEL`. Embeddings are generated locally
+via `sentence-transformers/all-MiniLM-L6-v2` (384-dim vectors), which pulls in `torch`/`transformers` and
+needs internet access on first run to pull the model from Hugging Face; the LLM client needs internet
+access for every call (it's a live API, no local fallback).
 
 Key packages: `psycopg2`, `python-dotenv`, `sqlalchemy` (2.0), `pgvector` (Python package, for
 `pgvector.sqlalchemy.Vector`), `sentence-transformers` (also provides `CrossEncoder`, used by
 `app/retrieval/rerank.py` — no separate reranking package needed), `apscheduler` (drives
-`workers/scheduler.py`), `google-genai` (Gemini SDK — chosen over the legacy `google-generativeai` package),
-`pydantic` (backs `app/llm/schemas.py`), `sqlglot` (chosen over `pglast` for `app/validation/sql_parser.py`
-— `pglast` needs native compilation against the PG C parser; `sqlglot` is pure Python, avoiding a repeat of
-pgvector's Windows build pain). pgvector on Windows needs PG **17.3+** (17.0–17.2 has a Windows linker bug
-that breaks building the extension from source). `fastapi` + `uvicorn` (the HTTP API), `streamlit` +
-`requests` (the UI — calls the API over HTTP, doesn't import `app.pipeline`), `prometheus-client` (`/metrics`),
-`pytest` + `httpx` (`httpx` is required by FastAPI's `TestClient`, not called directly).
+`workers/scheduler.py`), `openai` (the SDK — Groq documents its API as an OpenAI-compatible drop-in, so
+`app/llm/client.py` points it at `https://api.groq.com/openai/v1` rather than using a bespoke HTTP client;
+this is the same SDK the project used for xAI Grok, and the same integration pattern reused after
+Anthropic Claude turned out to need paid billing), `pydantic` (backs `app/llm/schemas.py`),
+`sqlglot` (chosen over `pglast` for `app/validation/sql_parser.py` — `pglast` needs native compilation
+against the PG C parser; `sqlglot` is pure Python, avoiding a repeat of pgvector's Windows build pain).
+pgvector on Windows needs PG **17.3+** (17.0–17.2 has a Windows linker bug that breaks building the
+extension from source). `fastapi` + `uvicorn` (the HTTP API), `streamlit` + `requests` (the UI — calls the
+API over HTTP, doesn't import `app.pipeline`), `prometheus-client` (`/metrics`), `pytest` + `httpx`
+(`httpx` is required by FastAPI's `TestClient`, not called directly).
 
 ## Architecture — how the pieces fit together
 
@@ -213,27 +227,48 @@ it still returns a fully-assembled prompt and surfaces the flag, leaving that po
 proceed anyway) to whichever future caller owns it.
 
 **LLM client** (architecture doc §3.4, §6.5, §8) — `app/llm/client.py`'s `call_llm()` is the entry point,
-taking `build_prompt()`'s output dict directly (no DB access, no retrieval re-run):
-1. `get_client()` builds a `genai.Client(api_key=app.config.GEMINI_API_KEY)` — Google AI Studio/Gemini via
-   the `google-genai` SDK.
-2. `generate_sql()` calls `client.models.generate_content()` with `temperature=0` (§3.4 determinism) and
-   `response_schema=SQLGenerationResponse` + `response_mime_type="application/json"` — Gemini enforces the
-   output shape at generation time, stronger than prompt instructions alone.
-3. `app/llm/schemas.py`'s `SQLGenerationResponse` is a single Pydantic model with every field optional,
-   covering **both** branches of the seeded prompt's contract: a normal `{sql, tables_used, assumptions,
-   confidence}` response, and the `{error: "insufficient_context", missing}` escape hatch (rule 1) — one
-   model because Gemini's `response_schema` locks the model into exactly one schema, so both branches must
-   be representable in it. `is_error_response()` lets callers branch.
-4. On parse/validation failure, `call_llm()` does **one** hand-rolled repair retry (re-calls with the error
-   appended, per §3.4) — not a generic retry library; that's a different concern (network transience, which
-   this module doesn't handle — the SDK's own internal retry covers that, and did visibly exhaust once
-   during testing on a transient `503`).
-
-Live-verified: a lookup question generated correct SQL first-try; an aggregation question that the
-retrieval layer flagged `low` confidence (the known reranker calibration caveat above) still produced
-correct SQL with the LLM self-reporting `high` confidence — validating why `build_prompt()`/`call_llm()`
-deliberately don't short-circuit on `clarification_needed`; and an out-of-scope question correctly
-triggered the `insufficient_context` escape hatch.
+taking `build_prompt()`'s output dict directly (no DB access, no retrieval re-run). This module has
+targeted Gemini, xAI Grok, and Anthropic Claude in turn; it was rewritten for Groq on 2026-08-21 — the
+prior providers all require paid billing, and Groq is the one genuinely-free (no-card) option, at the cost
+of tighter rate limits. Groq documents its API as an OpenAI-compatible drop-in, same as xAI did, so this
+reuses the `openai` SDK pattern rather than introducing a new one:
+1. `get_client()` builds `OpenAI(api_key=app.config.GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")`.
+2. `generate_sql()` calls `client.chat.completions.create()` with `response_format={"type":
+   "json_object"}` (JSON Object mode) — **not** `{"type": "json_schema", "json_schema": {"strict": true,
+   ...}}`, even though Groq documents strict-mode support for both models this project uses
+   (`openai/gpt-oss-20b`/`120b`). Strict mode was tried first, live, against this project's actual
+   `SQLGenerationResponse` schema, and Groq's validator rejected the model's own **correct** output: a
+   `null` value for a field typed `anyOf: [{type: ...}, {type: "null"}]` (Pydantic's rendering of an
+   `Optional` field) failed with `does not validate with /properties/<field>/type: expected string, but
+   got null` — a Groq-side validator bug with nullable/anyOf fields, not a schema-authoring mistake. JSON
+   Object mode only constrains the output to *be* a JSON object, not to match `SQLGenerationResponse`'s
+   shape — the OUTPUT FORMAT block in `app/prompting/templates/user_prompt.txt` carries the actual shape
+   instruction, and `parse_response()` + `call_llm()`'s repair retry (below) are what actually catch a
+   mismatch. Revisit strict mode if Groq fixes the anyOf/null validation — full details and the live
+   repro are in this module's own docstring.
+3. **Tiered model selection, not a fixed model — a quota lever, not a cost one, since Groq's free tier has
+   no per-token billing.** `generate_sql()` defaults to `GROQ_MODEL` (`openai/gpt-oss-20b`) — smaller and
+   faster, and sufficient for the large majority of well-scoped text-to-SQL questions. `call_llm()`'s one
+   repair retry (point 5 below) escalates to `GROQ_ESCALATION_MODEL` (`openai/gpt-oss-120b`) instead of
+   re-asking the smaller model with the same error appended — a shape/validation failure calls for a more
+   capable model, not another attempt at the same one. An explicit `model=` argument to `call_llm()`
+   overrides both attempts to that one model (no escalation), which is what the test suite uses for
+   determinism.
+4. `app/llm/schemas.py`'s `SQLGenerationResponse` is unchanged in shape — still a single Pydantic model
+   with every field optional, covering **both** branches of the seeded prompt's contract: a normal `{sql,
+   tables_used, assumptions, confidence}` response, and the `{error: "insufficient_context", missing}`
+   escape hatch (rule 1). `is_error_response()` lets callers branch.
+5. On parse/validation failure, `call_llm()` does **one** hand-rolled repair retry (re-calls with the error
+   appended, per §3.4, on the escalation model per point 3) — not a generic retry library; that's a
+   different concern (network transience, which this module doesn't handle —
+   `tests/conftest.py`'s `retry_on_api_error` covers that at the test level). Note this repair retry is
+   scoped to `call_llm()` internally (JSON *shape* failures) — `app/pipeline.py`'s own, separate repair
+   retry (SQL *content* failures, e.g. hallucinated columns) always calls `call_llm()` fresh, so it does
+   **not** inherit this escalation; a content-level repair still runs on `GROQ_MODEL` unless it also hits a
+   shape failure. Live-verified: 6 of 7 `pytest -m live` pipeline tests pass end to end against real Groq;
+   the one failure was `openai/gpt-oss-20b` generating SQL that referenced a nonexistent column alias — a
+   genuine SQL-quality gap of the smaller free model, not a plumbing bug, and a realistic tradeoff of this
+   provider vs. a paid frontier model.
 
 `app/llm/client.py` does **not** do SQL validation, guardrails, cost estimation, or full pipeline
 orchestration — those live in `app/validation/*` and `app/pipeline.py`, described next.
@@ -290,10 +325,10 @@ compilation, and this repo already has a documented, painful Windows build histo
    (`app/api/deps.py`'s `get_db()` only handles the DB connection — models aren't a FastAPI dependency,
    to avoid a circular import between `app.api` and `app.main`).
 2. A blanket `@app.exception_handler(Exception)` converts any unhandled exception (including a live
-   `google.genai.errors.ServerError`) into a clean HTTP 500 JSON response rather than leaking a traceback.
-   This matters for testing: it means `tests/conftest.py`'s FastAPI `TestClient`-based tests can't catch a
-   `ServerError` as a raised exception — they have to check `response.status_code` instead (`retry_on_5xx`
-   vs. `retry_on_api_error`, which is for direct, non-HTTP `call_llm()`/`generate_validated_sql()` calls).
+   `openai` SDK error) into a clean HTTP 500 JSON response rather than leaking a traceback. This matters
+   for testing: it means `tests/conftest.py`'s FastAPI `TestClient`-based tests can't catch that exception
+   directly — they have to check `response.status_code` instead (`retry_on_5xx` vs. `retry_on_api_error`,
+   which is for direct, non-HTTP `call_llm()`/`generate_validated_sql()` calls).
 3. `POST /api/v1/query` (`app/api/routes_query.py`) runs `generate_validated_sql()`, writes a
    `meta.query_log` row (`METADATA/20_add_query_log_and_feedback.sql`), and returns the row's `query_id` —
    the contract `POST /api/v1/feedback` depends on. `POST /api/v1/execute` **always re-validates** SQL via
@@ -304,27 +339,35 @@ compilation, and this repo already has a documented, painful Windows build histo
    into `meta.query_patterns` (the few-shot bank) requires an explicit `promote: true` in the request —
    never an automatic side effect of `is_correct: true`, since silently mutating the bank that drives
    future retrieval quality shouldn't happen without the caller asking for it.
-5. `GET /api/v1/health` (`routes_admin.py`) checks DB reachability, models-loaded, and `GEMINI_API_KEY`
-   presence — deliberately **never** makes a live Gemini call, since health checks get polled and polling
-   shouldn't bill an external API. `GET /metrics` is Prometheus exposition (`app/api/metrics.py`'s
+5. `GET /api/v1/health` (`routes_admin.py`) checks DB reachability, models-loaded, and `GROQ_API_KEY`
+   presence — deliberately **never** makes a live Groq call, since health checks get polled and polling
+   shouldn't burn free-tier rate-limit quota. `GET /metrics` is Prometheus exposition (`app/api/metrics.py`'s
    counters/histogram) at the bare path, **not** under `/api/v1/`, per §6.4.
 6. `ui/streamlit_app.py` calls the FastAPI service **over HTTP** (`API_BASE_URL`), never importing
    `app.pipeline` directly — §6.2 models Streamlit as a client of the API, and importing the pipeline would
    duplicate the model-loading problem inside a second process.
 
-Manually verified end to end: all 7 endpoints via curl/Swagger, the Streamlit UI driven in a real browser
-session (question → spinner → SQL/validation/confidence display → feedback), and a transient live-Gemini
-`503` mid-session confirmed to surface cleanly in the UI without corrupting state (no `query_log` row is
-written when the pipeline call raises, since that happens before the route's logging step).
+Manually verified end to end **under the Gemini integration** (before the 2026-08-14 xAI Grok switch, and
+the 2026-08-21 Anthropic Claude and Groq switches, both same day): all 7 endpoints via curl/Swagger, the
+Streamlit UI driven in a real browser session (question → spinner → SQL/validation/confidence display →
+feedback), and a transient LLM `503` mid-session confirmed to surface cleanly in the UI without corrupting
+state (no `query_log` row is written when the pipeline call raises, since that happens before the route's
+logging step) — that state-safety mechanism doesn't depend on which provider raised the error, so it still
+applies under Groq, but hasn't been independently re-verified through the UI itself yet.
 
 **End-to-end pipeline status**: question → `retrieve_context()` → `build_prompt()` → `call_llm()` →
-`validate_sql()` (+ one repair retry) → HTTP API → Streamlit UI is fully wired. Execution is wired but
-deliberately opt-in (`execute_query()`/`EXECUTE_ENABLED`, never automatic). A first pytest suite exists
-(`tests/`, see "Running things" and "Live-test cost" above) — 55 non-live tests are green; the 13 `live`
-tests are written and one live path (a direct `/api/v1/query` call) was manually verified working, but a
-full `pytest -m live` run hasn't completed clean in one sitting yet because of the free-tier daily quota —
-re-run it once quota resets. What's left, all deliberately deferred per `docs/MODULES.md`: OAuth2/OIDC
-auth + role-based schema visibility, Redis caching, Docker/Kubernetes, Grafana dashboards.
+`validate_sql()` (+ one repair retry) → HTTP API → Streamlit UI is fully wired, with `app/llm/client.py`
+now targeting Groq (`openai/gpt-oss-20b`, escalating to `openai/gpt-oss-120b` on repair — see "LLM client"
+above) after Anthropic Claude turned out to require paid billing (not covered by a Claude.ai consumer
+subscription) the same day it was implemented. **Live-verified in this session** via `pytest -m live`: both
+`test_llm.py` tests pass (normal SQL generation and the `insufficient_context` escape hatch both round-trip
+correctly through real Groq calls), and 6 of 7 `test_pipeline.py` tests pass — the one failure is a
+genuine SQL-quality miss by `openai/gpt-oss-20b` (a nonexistent column alias), not a plumbing bug; see the
+"LLM client" section above. The `test_api.py`/`test_e2e.py` live tests (HTTP layer) and the Streamlit UI
+haven't been separately re-run against Groq yet. Execution is wired but deliberately opt-in
+(`execute_query()`/`EXECUTE_ENABLED`, never automatic). What's left, all deliberately deferred per
+`docs/MODULES.md`: OAuth2/OIDC auth + role-based schema visibility, Redis caching, Docker/Kubernetes,
+Grafana dashboards.
 
 ## Working conventions in this repo
 

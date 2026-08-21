@@ -1,6 +1,6 @@
 """
 Shared fixtures. All tests hit the real database (and the `live`-marked
-ones hit the real Gemini API too) — chosen deliberately over mocking, per
+ones hit the real Groq API too) — chosen deliberately over mocking, per
 docs/API_AND_TESTING_PLAN.md.
 
 Model-loading fixtures (embedding_model, reranker_model) and db_connection
@@ -22,7 +22,7 @@ import time
 
 import pytest
 from fastapi.testclient import TestClient
-from google.genai.errors import ServerError
+from openai import InternalServerError
 
 from app.api.deps import get_db
 from app.db.session import get_connection
@@ -31,7 +31,7 @@ from app.retrieval.vector_search import load_embedding_model
 
 
 def pytest_configure(config):
-    config.addinivalue_line("markers", "live: test makes a real Gemini API call (billable, non-deterministic)")
+    config.addinivalue_line("markers", "live: test makes a real Groq API call (free-tier rate-limited, non-deterministic)")
     config.addinivalue_line("markers", "slow: test is slow to run")
 
 
@@ -92,17 +92,21 @@ def api_client():
 
 
 def retry_on_api_error(func, retries=2, delay=5):
-    """Retries func() on google.genai.errors.ServerError (transient 5xx,
-    e.g. 503 "model overloaded" — observed during development; the
-    google-genai SDK's own internal retry has been seen to exhaust on
-    this). For direct call_llm()/generate_validated_sql() calls, where
-    that exception propagates to the caller."""
+    """Retries func() on openai.InternalServerError (transient 5xx from
+    Groq's OpenAI-compatible endpoint). Deliberately does NOT retry
+    openai.RateLimitError (429) — that was a hard-learned lesson from this
+    project's earlier Gemini integration, where a 429 quota error looked
+    superficially retryable (the SDK's own short RetryInfo hint) but was
+    actually a daily cap that no amount of retrying fixes; Groq's free tier
+    has the same shape of hard rate limits. For direct
+    call_llm()/generate_validated_sql() calls, where the exception
+    propagates to the caller."""
 
     last_exc = None
     for attempt in range(retries + 1):
         try:
             return func()
-        except ServerError as exc:
+        except InternalServerError as exc:
             last_exc = exc
             if attempt < retries:
                 time.sleep(delay)
@@ -111,8 +115,8 @@ def retry_on_api_error(func, retries=2, delay=5):
 
 def retry_on_5xx(func, retries=2, delay=5):
     """Like retry_on_api_error, but for calls made through the FastAPI
-    TestClient: app/main.py's blanket exception handler catches
-    ServerError (and everything else) and turns it into an HTTP 500
+    TestClient: app/main.py's blanket exception handler catches any
+    exception (including openai SDK errors) and turns it into an HTTP 500
     JSON response before it ever reaches the test process as a raised
     exception, so retrying has to inspect response.status_code instead
     of catching an exception."""

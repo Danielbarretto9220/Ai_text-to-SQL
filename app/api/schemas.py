@@ -100,4 +100,4 @@ class HealthResponse(BaseModel):
     status: str
     database: bool
     models_loaded: bool
-    gemini_api_key_configured: bool
+    groq_api_key_configured: bool

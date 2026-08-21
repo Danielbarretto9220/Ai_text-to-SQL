@@ -1,5 +1,5 @@
 """
-app/prompting/prompt_builder.py — no Gemini calls (build_prompt() stops
+app/prompting/prompt_builder.py — no Groq calls (build_prompt() stops
 short of call_llm()), so nothing here is `live`-marked.
 """
 

@@ -2,7 +2,7 @@
 app/retrieval/* — vector search, keyword search, RRF fusion, reranking,
 join-path BFS, and the retrieve_context() pipeline entry point.
 
-No Gemini calls here (only the local embedding + cross-encoder models),
+No Groq calls here (only the local embedding + cross-encoder models),
 so nothing in this file is `live`-marked — but model inference is slower
 than pure-Python validation, hence a couple of `slow` marks.
 """
