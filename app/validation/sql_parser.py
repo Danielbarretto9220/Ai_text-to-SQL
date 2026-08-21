@@ -80,6 +80,19 @@ def check_hallucinations(connection, parsed):
 
     valid_referenced_tables = referenced_tables & known_tables
 
+    # SELECT-list aliases (e.g. COUNT(*) AS employee_count) are legal to
+    # reference unqualified elsewhere in the query (ORDER BY employee_count,
+    # HAVING employee_count > ...) without existing as a real schema column
+    # anywhere — Postgres resolves these against the output list, not the
+    # underlying tables. Found live: a Groq-generated `ORDER BY <alias>`
+    # query was rejected as "unknown column" despite being correct SQL.
+    known_aliases = {
+        projection.alias.lower()
+        for select_node in parsed.find_all(exp.Select)
+        for projection in select_node.expressions
+        if projection.alias
+    }
+
     for column_node in parsed.find_all(exp.Column):
         column_name = column_node.name.lower()
         qualifier = column_node.table.lower() if column_node.table else None
@@ -93,6 +106,8 @@ def check_hallucinations(connection, parsed):
             ):
                 errors.append(f"Unknown column: {resolved_table}.{column_name}")
             # resolved_table not in known_tables is already reported as an unknown-table error above
+        elif column_name in known_aliases:
+            continue
         elif valid_referenced_tables:
             if len(valid_referenced_tables) == 1:
                 only_table = next(iter(valid_referenced_tables))

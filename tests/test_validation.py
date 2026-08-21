@@ -31,6 +31,21 @@ def test_parse_valid_join(db_connection):
     assert check_joins(db_connection, parsed) == []
 
 
+def test_parse_select_alias_referenced_in_order_by_regression(db_connection):
+    # Found live via a Groq-generated query: an ORDER BY referencing a
+    # SELECT-list alias (COUNT(...) AS employee_count) was wrongly flagged
+    # as an unknown column, since the alias isn't a real column in either
+    # referenced table. Postgres resolves ORDER BY aliases against the
+    # output list, not the underlying schema.
+    parsed, error = parse_sql(
+        "SELECT b.branch_name, COUNT(lo.officer_id) AS employee_count "
+        "FROM loan_officers lo JOIN branches b ON lo.branch_id = b.branch_id "
+        "GROUP BY b.branch_name ORDER BY employee_count DESC"
+    )
+    assert error is None
+    assert check_hallucinations(db_connection, parsed) == []
+
+
 def test_parse_unknown_table(db_connection):
     parsed, error = parse_sql("SELECT * FROM nonexistent_table")
     assert error is None
