@@ -30,15 +30,27 @@ st.caption(f"API: {API_BASE_URL}")
 
 if "last_result" not in st.session_state:
     st.session_state.last_result = None
+if "execution_result" not in st.session_state:
+    st.session_state.execution_result = None
 if "feedback_sent" not in st.session_state:
     st.session_state.feedback_sent = False
 
 
-def call_query(question, execute):
+def call_query(question):
     response = requests.post(
         f"{API_BASE_URL}/api/v1/query",
-        json={"question": question, "execute": execute},
+        json={"question": question},
         timeout=60,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def call_execute(query_id):
+    response = requests.post(
+        f"{API_BASE_URL}/api/v1/execute",
+        json={"query_id": query_id},
+        timeout=30,
     )
     response.raise_for_status()
     return response.json()
@@ -62,16 +74,11 @@ def call_feedback(query_id, is_correct, corrected_sql, comment, promote):
 
 question = st.text_input("Ask a question about the banking data", placeholder="e.g. show me overdue EMI payments")
 
-execute_requested = False
-if EXECUTE_ENABLED:
-    execute_requested = st.checkbox("Also execute the query and show results", value=False)
-else:
-    st.caption("Execution is disabled server-side (EXECUTE_ENABLED=false).")
-
 if st.button("Ask", type="primary") and question.strip():
     with st.spinner("Retrieving context, generating SQL, validating..."):
         try:
-            st.session_state.last_result = call_query(question.strip(), execute_requested)
+            st.session_state.last_result = call_query(question.strip())
+            st.session_state.execution_result = None
             st.session_state.feedback_sent = False
         except requests.RequestException as exc:
             st.error(f"Request failed: {exc}")
@@ -136,10 +143,25 @@ if result:
                     )
                     st.text(f"{jp['from']} → {jp['to']}: {hops}")
 
-    if result["results"] is not None:
-        st.subheader("Results")
+    st.divider()
+
+    if result["valid"] and result["sql"]:
+        if EXECUTE_ENABLED:
+            if st.button("▶ Run this SQL on the database"):
+                with st.spinner("Executing query..."):
+                    try:
+                        st.session_state.execution_result = call_execute(result["query_id"])
+                    except requests.RequestException as exc:
+                        st.error(f"Execution failed: {exc}")
+                        st.session_state.execution_result = None
+        else:
+            st.caption("Execution is disabled server-side (EXECUTE_ENABLED=false) — the SQL above is not run.")
+
+    if st.session_state.execution_result is not None:
+        execution = st.session_state.execution_result
+        st.subheader(f"Query Results ({execution['row_count']} row(s))")
         st.dataframe(
-            [dict(zip(result["columns"], row)) for row in result["results"]],
+            [dict(zip(execution["columns"], row)) for row in execution["rows"]],
             use_container_width=True,
         )
 
