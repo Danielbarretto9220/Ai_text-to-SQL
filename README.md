@@ -148,6 +148,25 @@ The repo is laid out to match the target architecture in [`enterprise-text-to-sq
 
 There's no `pyproject.toml`/packaging yet, so run modules from the repo root with `-m` so `app`/`workers`/`tests` resolve as packages, e.g. `python -m workers.reindex_embeddings`.
 
+### First-time setup checklist
+
+`start.ps1` only starts the API and UI — it doesn't provision anything below. Run through this once per machine, in order, before using it:
+
+- [ ] **PostgreSQL 17.3+ with pgvector installed and running.** (Windows: PG 17.0–17.2 has a linker bug that breaks building pgvector from source — use 17.3+.)
+      Verify: `psql -U <user> -c "CREATE EXTENSION IF NOT EXISTS vector;"` succeeds without error.
+- [ ] **Database created** — `createdb <db_name>` (or `CREATE DATABASE <db_name>;` in psql/pgAdmin).
+- [ ] **Python 3.x + pip installed**, then from the repo root: `pip install -r requirements.txt`.
+- [ ] **Banking schema + dummy data loaded** — run `SQL/01_create_tables.sql` through `SQL/05_insert_emi.sql`, in numeric order, against the new database (`SQL/06_sample_queries.sql` is optional reference SELECTs, not required).
+      Verify: `psql -d <db_name> -c "SELECT count(*) FROM customers;"` returns a nonzero count.
+- [ ] **Meta schema + population loaded** — run every `METADATA/01_*.sql` through `METADATA/20_*.sql`, in numeric order, against the same database.
+      Verify: `psql -d <db_name> -c "SELECT count(*) FROM meta.tables;"` returns a nonzero count.
+- [ ] **`.env` created** in the repo root with `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASSWORD` for the database above, plus `GROQ_API_KEY` (free key from [console.groq.com/keys](https://console.groq.com/keys)) — see "Prerequisites & Setup" above for the full key list, including optional ones.
+      Verify: `python test_connection.py` prints `✅ PostgreSQL connection successful!`.
+- [ ] **Embeddings generated** (needs internet on first run, to pull the embedding model from Hugging Face) — `python -m workers.reindex_embeddings`.
+      Verify: `psql -d <db_name> -c "SELECT count(*) FROM meta.document_embeddings;"` returns a nonzero count.
+
+Once every box is checked, `.\start.ps1` will work.
+
 ### Running the API, UI, and tests
 
 On Windows, `.\start.ps1` starts both the API and the UI in their own windows, waiting for the API's

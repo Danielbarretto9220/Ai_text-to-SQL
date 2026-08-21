@@ -19,7 +19,7 @@ Set-Location $RepoRoot
 
 if (-not (Test-Path ".env")) {
     Write-Host "No .env file found in $RepoRoot." -ForegroundColor Red
-    Write-Host "Create one first -- see README.md 'Prerequisites & Setup' for the required keys (DB_*, GEMINI_API_KEY)." -ForegroundColor Yellow
+    Write-Host "Create one first -- see README.md 'Prerequisites & Setup' for the required keys (DB_*, GROQ_API_KEY)." -ForegroundColor Yellow
     exit 1
 }
 
